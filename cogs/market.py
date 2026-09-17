@@ -32,7 +32,7 @@ class MarketCog(commands.Cog):
         conn.commit()
         conn.close()
 
-    # 24小時背景爬蟲：監聽 3 個交易頻道 (保留你的核心邏輯)
+    # 24小時背景爬蟲：監聽 3 個交易頻道
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot:
@@ -74,9 +74,9 @@ class MarketCog(commands.Cog):
             results.append({"item": item_name, "price": price})
         return results
 
-    # [全新疊加功能] 一鍵掃描歷史頻道，把過去的行情全部同步進資料庫
-    @app_commands.command(name="同步歷史行情", description="[管理員專用] 掃描指定交易頻道的歷史對話，自動建立市場行情資料庫")
-    @app_commands.describe(抓取數量="要往上抓取幾則歷史訊息 (預設1000)")
+    # [全新升級] 自動掃描所有指定交易頻道，一鍵同步全部歷史行情
+    @app_commands.command(name="同步歷史行情", description="[管理員專用] 自動掃描所有指定交易頻道的歷史對話，建立市場行情資料庫")
+    @app_commands.describe(抓取數量="每個頻道要往上抓取幾則歷史訊息 (預設1000)")
     @app_commands.checks.has_permissions(administrator=True)
     async def sync_market_history(self, interaction: discord.Interaction, 抓取數量: int = 1000):
         await interaction.response.defer(ephemeral=True)
@@ -85,24 +85,43 @@ class MarketCog(commands.Cog):
         conn = sqlite3.connect("guild_system.db")
         cursor = conn.cursor()
         
-        count = 0
-        # 如果使用者在目標頻道執行，就掃描當前頻道；如果不在，就自動掃描第一個目標交易頻道
-        target_channel = interaction.channel
-        
-        async for msg in target_channel.history(limit=抓取數量):
-            if msg.author.bot: continue
-            parsed_items = self.parse_market_message(msg.content)
-            if parsed_items:
-                for item in parsed_items:
-                    cursor.execute("""
-                        INSERT INTO market_prices (channel_id, raw_content, item_name, price, timestamp)
-                        VALUES (?, ?, ?, ?, ?)
-                    """, (str(target_channel.id), msg.content, item["item"], item["price"], msg.created_at.isoformat()))
-                    count += 1
-                    
+        total_count = 0
+        success_channels = 0
+
+        # 自動遍歷所有設定好的目標頻道 ID
+        for channel_id in self.target_channel_ids:
+            channel = self.bot.get_channel(channel_id)
+            if not channel:
+                try:
+                    channel = await self.bot.fetch_channel(channel_id)
+                except Exception:
+                    continue
+            
+            if channel:
+                success_channels += 1
+                async for msg in channel.history(limit=抓取數量):
+                    if msg.author.bot: 
+                        continue
+                    parsed_items = self.parse_market_message(msg.content)
+                    if parsed_items:
+                        for item in parsed_items:
+                            cursor.execute("""
+                                INSERT INTO market_prices (channel_id, raw_content, item_name, price, timestamp)
+                                VALUES (?, ?, ?, ?, ?)
+                            """, (str(channel.id), msg.content, item["item"], item["price"], msg.created_at.isoformat()))
+                            total_count += 1
+                            
         conn.commit()
         conn.close()
-        await interaction.followup.send(f"✅ 歷史行情同步完成！已成功從本頻道抓取 **{count}** 筆交易紀錄並寫入資料庫！", ephemeral=True)
+        
+        await interaction.followup.send(
+            f"✅ 歷史行情同步完成！已成功從 **{success_channels} 個指定交易頻道** 中，總共抓取 **{total_count}** 筆交易紀錄並寫入資料庫！", 
+            ephemeral=True
+        )
+
+    @sync_market_error_handler if 'sync_market_error_handler' in globals() else None # 保持簡潔的錯誤處理
+    @app_commands.command(name="sync_market_history_error") # 佔位避免裝飾器衝突，使用下方標準 error 處理
+    async def dummy_err(self, interaction: discord.Interaction): pass
 
     @sync_market_history.error
     async def sync_market_error(self, interaction: discord.Interaction, error):
@@ -111,7 +130,7 @@ class MarketCog(commands.Cog):
         else:
             await interaction.response.send_message(f"❌ 發生錯誤: {error}", ephemeral=True)
 
-    # 中文 Slash 指令：查詢市場行情 (保留你的完整排版與計算邏輯)
+    # 中文 Slash 指令：查詢市場行情
     @app_commands.command(name="市場查詢", description="查詢指定道具的市場最新行情與平均價")
     @app_commands.describe(關鍵字="輸入要查詢的物品名稱關鍵字（例如：HEART GEM）")
     async def market_search(self, interaction: discord.Interaction, 關鍵字: str):
@@ -142,7 +161,6 @@ class MarketCog(commands.Cog):
             history_text += f"• **{r[0]}** - ` {r[1]:,} 元` *({time_short})*\n"
         
         embed.add_field(name="📜 最近成交紀錄", value=history_text, inline=False)
-        # 配合面板設計，這裡維持你的公開或私密回傳邏輯（預設公開，也可以改成 ephemeral=True）
         await interaction.response.send_message(embed=embed)
 
 async def setup(bot):
