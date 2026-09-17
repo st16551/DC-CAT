@@ -65,42 +65,54 @@ class MarketCog(commands.Cog):
             await interaction.followup.send(f"❌ 讀取雲端資料發生錯誤: {e}", ephemeral=True)
             return
 
-        if not data:
-            await interaction.followup.send("⚠️ 雲端資料庫目前沒有回傳任何資料。", ephemeral=True)
+        if not data or not isinstance(data, dict):
+            await interaction.followup.send("⚠️ 雲端資料庫格式不符或目前沒有回傳資料。", ephemeral=True)
+            return
+
+        # 抓取 discord_market 底下的清單
+        market_list = data.get("discord_market", [])
+        if not market_list:
+            await interaction.followup.send("⚠️ 雲端資料庫中找不到 `discord_market` 節點資料。", ephemeral=True)
             return
 
         conn = sqlite3.connect("guild_system.db")
         cursor = conn.cursor()
 
-        # 遞迴抓取 Firebase JSON 內所有可能的訊息與價格欄位
-        def extract_nodes(node):
-            nonlocal total_count
-            if isinstance(node, dict):
-                content = node.get("content") or node.get("raw_content") or node.get("text") or node.get("message")
-                if content and isinstance(content, str):
-                    parsed_items = self.parse_market_message(content)
-                    if parsed_items:
-                        timestamp = node.get("timestamp") or datetime.now().isoformat()
-                        channel_id = str(node.get("channel_id", "firebase_sync"))
-                        for item in parsed_items:
-                            cursor.execute("""
-                                INSERT INTO market_prices (channel_id, raw_content, item_name, price, timestamp)
-                                VALUES (?, ?, ?, ?, ?)
-                            """, (channel_id, content, item["item"], item["price"], str(timestamp)))
-                            total_count += 1
-                for value in node.values():
-                    extract_nodes(value)
-            elif isinstance(node, list):
-                for item in node:
-                    extract_nodes(item)
+        for entry in market_list:
+            if not isinstance(entry, dict):
+                continue
+            
+            # 優先使用 combined欄位，如果沒有則退而求其次找 title
+            content = entry.get("combined") or entry.get("title")
+            if content and isinstance(content, str):
+                parsed_items = self.parse_market_message(content)
+                # 如果正規表達式沒抓到金額，但 Firebase 欄位本身有記錄 price 且大於 0，也可以手動納入
+                raw_price = entry.get("price", 0)
+                
+                if parsed_items:
+                    timestamp = entry.get("time") or datetime.now().isoformat()
+                    channel_id = str(entry.get("channel_id", "firebase_sync"))
+                    for item in parsed_items:
+                        cursor.execute("""
+                            INSERT INTO market_prices (channel_id, raw_content, item_name, price, timestamp)
+                            VALUES (?, ?, ?, ?, ?)
+                        """, (channel_id, content, item["item"], item["price"], str(timestamp)))
+                        total_count += 1
+                elif raw_price > 0:
+                    # 如果內文沒抓到價格但資料本身有 price 欄位，直接以標題作為物品名稱入庫
+                    timestamp = entry.get("time") or datetime.now().isoformat()
+                    channel_id = str(entry.get("channel_id", "firebase_sync"))
+                    cursor.execute("""
+                        INSERT INTO market_prices (channel_id, raw_content, item_name, price, timestamp)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (channel_id, content, content[:30], int(raw_price), str(timestamp)))
+                    total_count += 1
 
-        extract_nodes(data)
-        
         conn.commit()
         conn.close()
         
         await interaction.followup.send(
-            f"✅ 雲端市場行情同步完成！已成功從遠端資料庫匯入 **{total_count}** 筆交易紀錄至本機資料庫！", 
+            f"✅ 雲端市場行情同步完成！已成功從遠端 `discord_market` 匯入 **{total_count}** 筆交易紀錄至本機資料庫！", 
             ephemeral=True
         )
 
@@ -132,7 +144,7 @@ class MarketCog(commands.Cog):
         
         embed = discord.Embed(title=f"📊 「{關鍵字}」市場行情搜尋結果", color=discord.Color.blue())
         prices = [row[1] for row in rows]
-        avg_price = sum(prices) // len(prices)
+        avg_price = sum(prices) // len(prices) if prices else 0
         
         embed.add_field(name="💰 近期平均行情", value=f"`{avg_price:,} 元`", inline=False)
         
