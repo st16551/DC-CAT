@@ -43,8 +43,13 @@ class SplitModal(discord.ui.Modal, title="登記打寶與開單分錢"):
         item_name = self.掉落物品.value
         keyword_input = self.參與成員關鍵字.value.strip()
 
+        # 確保所有需要的表格都存在
         conn = sqlite3.connect("guild_system.db")
         cursor = conn.cursor()
+        cursor.execute("CREATE TABLE IF NOT EXISTS roster (id INTEGER PRIMARY KEY AUTOINCREMENT, member_name TEXT UNIQUE)")
+        cursor.execute("CREATE TABLE IF NOT EXISTS splits (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, leader TEXT, item_name TEXT, total_price INTEGER, status TEXT, members TEXT, per_person INTEGER)")
+        cursor.execute("CREATE TABLE IF NOT EXISTS claims (id INTEGER PRIMARY KEY AUTOINCREMENT, split_id INTEGER, member_name TEXT, amount INTEGER, status TEXT)")
+        
         cursor.execute("SELECT member_name FROM roster")
         all_roster = [row[0] for row in cursor.fetchall()]
 
@@ -61,16 +66,14 @@ class SplitModal(discord.ui.Modal, title="登記打寶與開單分錢"):
 
         member_count = len(selected_members)
         per_person = total_price // member_count if member_count > 0 else 0
-        status = 'active' if total_price > 0 else 'pending' # 0元代表尚未售出，存入待售庫
+        status = 'active' if total_price > 0 else 'pending'
 
-        # 寫入資料庫
         cursor.execute("""
             INSERT INTO splits (date, leader, item_name, total_price, status, members, per_person)
             VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (self.打寶日期.value, interaction.user.display_name, item_name, total_price, status, ",".join(selected_members), per_person))
         split_id = cursor.lastrowid
 
-        # 若有價格，同步在 claims 表中生成每個人的未領紀錄
         if total_price > 0:
             for member in selected_members:
                 cursor.execute("""
@@ -108,6 +111,7 @@ class SplitCog(commands.Cog):
         if 物品關鍵字:
             conn = sqlite3.connect("guild_system.db")
             cursor = conn.cursor()
+            cursor.execute("CREATE TABLE IF NOT EXISTS market_prices (id INTEGER PRIMARY KEY AUTOINCREMENT, channel_id TEXT, raw_content TEXT, item_name TEXT, price INTEGER, timestamp TEXT)")
             cursor.execute("SELECT item_name, price FROM market_prices WHERE item_name LIKE ? ORDER BY timestamp DESC LIMIT 1", (f"%{物品關鍵字}%",))
             row = cursor.fetchone()
             conn.close()
