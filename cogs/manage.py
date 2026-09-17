@@ -1,7 +1,7 @@
 import sqlite3
 import discord
-from discord.ext import commands
 from discord import app_commands
+from discord.ext import commands
 
 # 1. 市場查詢彈出視窗
 class MarketSearchModal(discord.ui.Modal, title="市場行情快速查詢"):
@@ -16,24 +16,28 @@ class MarketSearchModal(discord.ui.Modal, title="市場行情快速查詢"):
 
     async def on_submit(self, interaction: discord.Interaction):
         keyword = self.物品關鍵字.value.strip()
-        conn = sqlite3.connect("guild_system.db")
-        cursor = conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS market_prices (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                channel_id TEXT,
-                raw_content TEXT,
-                item_name TEXT,
-                price INTEGER,
-                timestamp TEXT
-            )
-        """)
-        cursor.execute("""
-            SELECT item_name, price, timestamp FROM market_prices 
-            WHERE item_name LIKE ? ORDER BY timestamp DESC LIMIT 5
-        """, (f"%{keyword}%",))
-        rows = cursor.fetchall()
-        conn.close()
+        try:
+            conn = sqlite3.connect("guild_database.db")
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS market_prices (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    channel_id TEXT,
+                    raw_content TEXT,
+                    item_name TEXT,
+                    price INTEGER,
+                    timestamp TEXT
+                )
+            """)
+            cursor.execute("""
+                SELECT item_name, price, timestamp FROM market_prices 
+                WHERE item_name LIKE ? ORDER BY timestamp DESC LIMIT 5
+            """, (f"%{keyword}%",))
+            rows = cursor.fetchall()
+            conn.close()
+        except Exception as e:
+            await interaction.response.send_message(f"❌ 查詢資料庫時發生錯誤：{e}", ephemeral=True)
+            return
 
         if not rows:
             await interaction.response.send_message(f"🔍 找不到與「`{keyword}`」相關的市場行情紀錄。", ephemeral=True)
@@ -60,16 +64,34 @@ class GuildPanelView(discord.ui.View):
 
     @discord.ui.button(label="📦 登記打寶", style=discord.ButtonStyle.blurple, custom_id="guild_panel:split", row=0)
     async def split_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        from cogs.split import SplitModal
-        await interaction.response.send_modal(SplitModal())
+        try:
+            from cogs.split import SplitModal
+            await interaction.response.send_modal(SplitModal())
+        except ImportError:
+            await interaction.response.send_message("❌ 尚未在 split.py 中定義 SplitModal，請確認該模組內容。", ephemeral=True)
 
     @discord.ui.button(label="📦 待售寶物庫", style=discord.ButtonStyle.gray, custom_id="guild_panel:pending", row=1)
     async def pending_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        conn = sqlite3.connect("guild_system.db")
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, date, leader, item_name FROM splits WHERE status = 'pending'")
-        rows = cursor.fetchall()
-        conn.close()
+        try:
+            conn = sqlite3.connect("guild_database.db")
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS splits (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date TEXT,
+                    leader TEXT,
+                    item_name TEXT,
+                    total_price INTEGER,
+                    per_person INTEGER,
+                    status TEXT
+                )
+            """)
+            cursor.execute("SELECT id, date, leader, item_name FROM splits WHERE status = 'pending'")
+            rows = cursor.fetchall()
+            conn.close()
+        except Exception as e:
+            await interaction.response.send_message(f"❌ 讀取資料庫失敗：{e}", ephemeral=True)
+            return
 
         if not rows:
             await interaction.response.send_message("📦 目前沒有任何待售中的寶物。", ephemeral=True)
@@ -84,27 +106,42 @@ class GuildPanelView(discord.ui.View):
     @discord.ui.button(label="💰 我的未領查詢", style=discord.ButtonStyle.gray, custom_id="guild_panel:claims", row=1)
     async def claims_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         member_name = interaction.user.display_name
-        conn = sqlite3.connect("guild_system.db")
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT c.id, s.item_name, c.amount, s.leader 
-            FROM claims c JOIN splits s ON c.split_id = s.id 
-            WHERE c.member_name LIKE ? AND c.status = 'unclaimed'
-        """, (f"%{member_name}%",))
-        rows = cursor.fetchall()
-        conn.close()
+        try:
+            conn = sqlite3.connect("guild_database.db")
+            cursor = conn.cursor()
+            # 相容 split.py 的 split_records 資料表 (status = 0 代表未領)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS split_records (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    member_name TEXT,
+                    item_name TEXT,
+                    total_per_person INTEGER,
+                    leader_name TEXT,
+                    status INTEGER DEFAULT 0
+                )
+            """)
+            cursor.execute("""
+                SELECT item_name, total_per_person, leader_name 
+                FROM split_records 
+                WHERE member_name LIKE ? AND status = 0
+            """, (f"%{member_name}%",))
+            rows = cursor.fetchall()
+            conn.close()
+        except Exception as e:
+            await interaction.response.send_message(f"❌ 查詢未領紀錄失敗：{e}", ephemeral=True)
+            return
 
         if not rows:
             await interaction.response.send_message(f"🎉 太棒了 {member_name}！你目前沒有任何未領取的打寶款項。", ephemeral=True)
             return
 
-        total_unclaimed = sum([r[2] for r in rows])
+        total_unclaimed = sum([r[1] for r in rows])
         embed = discord.Embed(title=f"💰 「{member_name}」的未領金額清單", color=discord.Color.orange())
         embed.add_field(name="💎 總未領金額", value=f"`{total_unclaimed:,} 元`", inline=False)
         
         claim_text = ""
         for r in rows:
-            claim_text += f"• **{r[1]}** - `{r[2]:,} 元` *(負責人: {r[3]})*\n"
+            claim_text += f"• **{r[0]}** - `{r[1]:,} 元` *(負責人: {r[2]})*\n"
         
         embed.add_field(name="📜 明細列表", value=claim_text, inline=False)
         embed.add_field(name="⚠️ 領款安全提醒", value="領錢一律開**本尊**交易，切勿開小號分身；金額較大請自備精煉過裝備，避免不平等交易遭鎖帳號。", inline=False)
@@ -113,11 +150,26 @@ class GuildPanelView(discord.ui.View):
 
     @discord.ui.button(label="📊 分錢流水帳", style=discord.ButtonStyle.gray, custom_id="guild_panel:ledger", row=2)
     async def ledger_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        conn = sqlite3.connect("guild_system.db")
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, date, leader, item_name, total_price, per_person, status FROM splits WHERE status != 'archived'")
-        rows = cursor.fetchall()
-        conn.close()
+        try:
+            conn = sqlite3.connect("guild_database.db")
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS splits (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date TEXT,
+                    leader TEXT,
+                    item_name TEXT,
+                    total_price INTEGER,
+                    per_person INTEGER,
+                    status TEXT
+                )
+            """)
+            cursor.execute("SELECT id, date, leader, item_name, total_price, per_person, status FROM splits WHERE status != 'archived'")
+            rows = cursor.fetchall()
+            conn.close()
+        except Exception as e:
+            await interaction.response.send_message(f"❌ 讀取流水帳失敗：{e}", ephemeral=True)
+            return
 
         if not rows:
             await interaction.response.send_message("📜 目前沒有進行中的分錢清單。", ephemeral=True)
@@ -165,14 +217,17 @@ class GuildManageCog(commands.Cog):
         else:
             await interaction.response.send_message(f"❌ 發生錯誤: {error}", ephemeral=True)
 
-    # 確保獨立斜線指令也能正常顯示在選單中
     @app_commands.command(name="待售寶物", description="查看目前尚未售出、還在倉庫裡的打寶品清單")
     async def pending_list_cmd(self, interaction: discord.Interaction):
-        conn = sqlite3.connect("guild_system.db")
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, date, leader, item_name FROM splits WHERE status = 'pending'")
-        rows = cursor.fetchall()
-        conn.close()
+        try:
+            conn = sqlite3.connect("guild_database.db")
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, date, leader, item_name FROM splits WHERE status = 'pending'")
+            rows = cursor.fetchall()
+            conn.close()
+        except Exception as e:
+            await interaction.response.send_message(f"❌ 讀取資料失敗：{e}", ephemeral=True)
+            return
 
         if not rows:
             await interaction.response.send_message("📦 目前沒有任何待售中的寶物。", ephemeral=True)
@@ -187,27 +242,31 @@ class GuildManageCog(commands.Cog):
     @app_commands.command(name="未領查詢", description="查詢自己目前還有多少打寶未領金額")
     async def my_claims_cmd(self, interaction: discord.Interaction):
         member_name = interaction.user.display_name
-        conn = sqlite3.connect("guild_system.db")
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT c.id, s.item_name, c.amount, s.leader 
-            FROM claims c JOIN splits s ON c.split_id = s.id 
-            WHERE c.member_name LIKE ? AND c.status = 'unclaimed'
-        """, (f"%{member_name}%",))
-        rows = cursor.fetchall()
-        conn.close()
+        try:
+            conn = sqlite3.connect("guild_database.db")
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT item_name, total_per_person, leader_name 
+                FROM split_records 
+                WHERE member_name LIKE ? AND status = 0
+            """, (f"%{member_name}%",))
+            rows = cursor.fetchall()
+            conn.close()
+        except Exception as e:
+            await interaction.response.send_message(f"❌ 查詢未領金額失敗：{e}", ephemeral=True)
+            return
 
         if not rows:
             await interaction.response.send_message(f"🎉 太棒了 {member_name}！你目前沒有任何未領取的打寶款項。", ephemeral=True)
             return
 
-        total_unclaimed = sum([r[2] for r in rows])
+        total_unclaimed = sum([r[1] for r in rows])
         embed = discord.Embed(title=f"💰 「{member_name}」的未領金額清單", color=discord.Color.orange())
         embed.add_field(name="💎 總未領金額", value=f"`{total_unclaimed:,} 元`", inline=False)
         
         claim_text = ""
         for r in rows:
-            claim_text += f"• **{r[1]}** - `{r[2]:,} 元` *(負責人: {r[3]})*\n"
+            claim_text += f"• **{r[0]}** - `{r[1]:,} 元` *(負責人: {r[2]})*\n"
         
         embed.add_field(name="📜 明細列表", value=claim_text, inline=False)
         embed.add_field(name="⚠️ 領款安全提醒", value="領錢一律開**本尊**交易，切勿開小號分身；金額較大請自備精煉過裝備，避免不平等交易遭鎖帳號。", inline=False)
