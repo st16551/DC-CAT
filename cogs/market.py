@@ -9,11 +9,9 @@ from datetime import datetime
 class MarketCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        # Firebase 即時資料庫的公開 JSON 端點
         self.firebase_url = "https://index-c18db-default-rtdb.firebaseio.com/.json"
         self.ensure_db()
 
-    # 確保資料庫與表格隨時存在，絕不因缺表報錯
     def ensure_db(self):
         conn = sqlite3.connect("guild_system.db")
         cursor = conn.cursor()
@@ -46,7 +44,6 @@ class MarketCog(commands.Cog):
             results.append({"item": item_name, "price": price})
         return results
 
-    # 一鍵直接從 Firebase 雲端資料庫同步所有市場行情
     @app_commands.command(name="同步歷史行情", description="[管理員專用] 直接從雲端市場資料庫同步最新行情資料")
     @app_commands.checks.has_permissions(administrator=True)
     async def sync_market_history(self, interaction: discord.Interaction):
@@ -69,7 +66,6 @@ class MarketCog(commands.Cog):
             await interaction.followup.send("⚠️ 雲端資料庫格式不符或目前沒有回傳資料。", ephemeral=True)
             return
 
-        # 抓取 discord_market 底下的清單
         market_list = data.get("discord_market", [])
         if not market_list:
             await interaction.followup.send("⚠️ 雲端資料庫中找不到 `discord_market` 節點資料。", ephemeral=True)
@@ -78,41 +74,42 @@ class MarketCog(commands.Cog):
         conn = sqlite3.connect("guild_system.db")
         cursor = conn.cursor()
 
+        # 清空舊資料重新匯入，確保資料完全同步且不重複堆疊
+        cursor.execute("DELETE FROM market_prices")
+
         for entry in market_list:
+            # 濾掉 Firebase 裡常見的空值 (None)
             if not isinstance(entry, dict):
                 continue
             
-            # 優先使用 combined欄位，如果沒有則退而求其次找 title
             content = entry.get("combined") or entry.get("title")
+            raw_price = entry.get("price", 0)
+            
             if content and isinstance(content, str):
                 parsed_items = self.parse_market_message(content)
-                # 如果正規表達式沒抓到金額，但 Firebase 欄位本身有記錄 price 且大於 0，也可以手動納入
-                raw_price = entry.get("price", 0)
+                timestamp = entry.get("time") or datetime.now().isoformat()
+                channel_id = str(entry.get("channel_id", "firebase_sync"))
                 
                 if parsed_items:
-                    timestamp = entry.get("time") or datetime.now().isoformat()
-                    channel_id = str(entry.get("channel_id", "firebase_sync"))
                     for item in parsed_items:
                         cursor.execute("""
                             INSERT INTO market_prices (channel_id, raw_content, item_name, price, timestamp)
                             VALUES (?, ?, ?, ?, ?)
                         """, (channel_id, content, item["item"], item["price"], str(timestamp)))
                         total_count += 1
-                elif raw_price > 0:
-                    # 如果內文沒抓到價格但資料本身有 price 欄位，直接以標題作為物品名稱入庫
-                    timestamp = entry.get("time") or datetime.now().isoformat()
-                    channel_id = str(entry.get("channel_id", "firebase_sync"))
+                else:
+                    # 就算內文正規表達式沒抓到特定價錢格式，只要有標題內容也一併入庫讓搜尋找得到
                     cursor.execute("""
                         INSERT INTO market_prices (channel_id, raw_content, item_name, price, timestamp)
                         VALUES (?, ?, ?, ?, ?)
-                    """, (channel_id, content, content[:30], int(raw_price), str(timestamp)))
+                    """, (channel_id, content, content[:50], int(raw_price), str(timestamp)))
                     total_count += 1
 
         conn.commit()
         conn.close()
         
         await interaction.followup.send(
-            f"✅ 雲端市場行情同步完成！已成功從遠端 `discord_market` 匯入 **{total_count}** 筆交易紀錄至本機資料庫！", 
+            f"✅ 雲端市場行情同步完成！已成功從遠端 `discord_market` 完整匯入 **{total_count}** 筆交易紀錄至本機資料庫！", 
             ephemeral=True
         )
 
@@ -123,7 +120,6 @@ class MarketCog(commands.Cog):
         else:
             await interaction.response.send_message(f"❌ 發生錯誤: {error}", ephemeral=True)
 
-    # 市場查詢指令
     @app_commands.command(name="市場查詢", description="查詢指定道具的市場最新行情與平均價")
     @app_commands.describe(關鍵字="輸入要查詢的物品名稱關鍵字（例如：Echo）")
     async def market_search(self, interaction: discord.Interaction, 關鍵字: str):
@@ -143,15 +139,19 @@ class MarketCog(commands.Cog):
             return
         
         embed = discord.Embed(title=f"📊 「{關鍵字}」市場行情搜尋結果", color=discord.Color.blue())
-        prices = [row[1] for row in rows]
+        prices = [row[1] for row in rows if row[1] > 0]
         avg_price = sum(prices) // len(prices) if prices else 0
         
-        embed.add_field(name="💰 近期平均行情", value=f"`{avg_price:,} 元`", inline=False)
+        if avg_price > 0:
+            embed.add_field(name="💰 近期平均行情", value=f"`{avg_price:,} 元`", inline=False)
+        else:
+            embed.add_field(name="💰 近期平均行情", value="`依內文/無固定標價`", inline=False)
         
         history_text = ""
         for r in rows:
             time_short = r[2].replace("T", " ")[:16] if r[2] else "未知時間"
-            history_text += f"• **{r[0]}** - ` {r[1]:,} 元` *({time_short})*\n"
+            p_str = f"{r[1]:,}" if r[1] > 0 else "議價/未標價"
+            history_text += f"• **{r[0]}** - ` {p_str} ` *({time_short})*\n"
         
         embed.add_field(name="📜 最近成交紀錄", value=history_text, inline=False)
         await interaction.response.send_message(embed=embed)
