@@ -15,7 +15,7 @@ class MarketCog(commands.Cog):
         }
         self.ensure_db()
 
-    # [升級防呆] 確保資料庫與表格隨時存在，絕不因缺表報錯
+    # 確保資料庫與表格隨時存在，絕不因缺表報錯
     def ensure_db(self):
         conn = sqlite3.connect("guild_system.db")
         cursor = conn.cursor()
@@ -74,7 +74,7 @@ class MarketCog(commands.Cog):
             results.append({"item": item_name, "price": price})
         return results
 
-    # [全新升級] 自動掃描所有指定交易頻道，一鍵同步全部歷史行情
+    # 1. 完整保留：一鍵自動掃描所有指定交易頻道的歷史行情同步指令
     @app_commands.command(name="同步歷史行情", description="[管理員專用] 自動掃描所有指定交易頻道的歷史對話，建立市場行情資料庫")
     @app_commands.describe(抓取數量="每個頻道要往上抓取幾則歷史訊息 (預設1000)")
     @app_commands.checks.has_permissions(administrator=True)
@@ -88,7 +88,6 @@ class MarketCog(commands.Cog):
         total_count = 0
         success_channels = 0
 
-        # 自動遍歷所有設定好的目標頻道 ID
         for channel_id in self.target_channel_ids:
             channel = self.bot.get_channel(channel_id)
             if not channel:
@@ -119,10 +118,6 @@ class MarketCog(commands.Cog):
             ephemeral=True
         )
 
-    @sync_market_error_handler if 'sync_market_error_handler' in globals() else None # 保持簡潔的錯誤處理
-    @app_commands.command(name="sync_market_history_error") # 佔位避免裝飾器衝突，使用下方標準 error 處理
-    async def dummy_err(self, interaction: discord.Interaction): pass
-
     @sync_market_history.error
     async def sync_market_error(self, interaction: discord.Interaction, error):
         if isinstance(error, app_commands.errors.MissingPermissions):
@@ -130,9 +125,9 @@ class MarketCog(commands.Cog):
         else:
             await interaction.response.send_message(f"❌ 發生錯誤: {error}", ephemeral=True)
 
-    # 中文 Slash 指令：查詢市場行情
+    # 2. 完整保留：市場查詢指令
     @app_commands.command(name="市場查詢", description="查詢指定道具的市場最新行情與平均價")
-    @app_commands.describe(關鍵字="輸入要查詢的物品名稱關鍵字（例如：HEART GEM）")
+    @app_commands.describe(關鍵字="輸入要查詢的物品名稱關鍵字（例如：Echo）")
     async def market_search(self, interaction: discord.Interaction, 關鍵字: str):
         self.ensure_db()
         conn = sqlite3.connect("guild_system.db")
