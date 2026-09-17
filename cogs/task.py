@@ -1,14 +1,14 @@
 import discord
 from discord.ext import commands
 
-# 💡 請把這裡改成你 Discord 伺服器裡專屬的「歷史紀錄頻道 ID」
+# 💡 請把這裡改成你 Discord 頻道 ID
 ARCHIVE_CHANNEL_ID = 123456789012345678
 
 
 class TaskView(discord.ui.View):
 
   def __init__(self, task_title, task_desc, creator, bot):
-    super().__init__(timeout=None)  # 讓按鈕永久有效
+    super().__init__(timeout=None)
     self.task_title = task_title
     self.task_desc = task_desc
     self.creator = creator
@@ -61,7 +61,6 @@ class TaskView(discord.ui.View):
     self.status = f"已完工 ✨ (由 {interaction.user.mention} 確認)"
     completed_embed = self.update_embed(discord.Color.green())
 
-    # 完工後禁用所有按鈕
     for child in self.children:
       child.disabled = True
 
@@ -70,7 +69,6 @@ class TaskView(discord.ui.View):
         f"🏆 任務【{self.task_title}】已圓滿結案！", ephemeral=False
     )
 
-    # 自動封存到歷史紀錄頻道
     archive_channel = self.bot.get_channel(ARCHIVE_CHANNEL_ID)
     if archive_channel:
       archive_embed = discord.Embed(
@@ -96,10 +94,11 @@ class TaskCog(commands.Cog):
   def __init__(self, bot):
     self.bot = bot
 
-  @discord.app.commands.command(
+  # 💡 這裡一定要用 app_commands (有底線)
+  @discord.app_commands.command(
       name="交辦", description="發布一項新的幹部交辦任務卡片"
   )
-  @discord.app.commands.describe(title="任務標題", content="任務詳細說明與要求")
+  @discord.app_commands.describe(title="任務標題", content="任務詳細說明與要求")
   async def create_task(
       self, interaction: discord.Interaction, title: str, content: str
   ):
