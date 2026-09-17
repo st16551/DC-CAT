@@ -12,7 +12,7 @@ class ValeMarketSync(commands.Cog):
     def cog_unload(self):
         self.sync_market_data.cancel()
 
-    # 每 30 分鐘自動同步一次 ValeMarket 全球快照
+    # 每 10 分鐘自動同步一次 ValeMarket 全球快照
     @tasks.loop(minutes=10)
     async def sync_market_data(self):
         url = "https://market-api.spiritvalers.com/v2/markets/global/snapshot"
