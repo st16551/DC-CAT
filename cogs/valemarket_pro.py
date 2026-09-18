@@ -117,7 +117,7 @@ class ValeMarketPro(commands.Cog):
         except Exception as e:
             print(f"[Market Sync Error] {e}")
 
-    @commands.slash_command(name="market", description="開啟靈谷全球市場資訊系統")
+    @commands.slash_command(name="拍賣場", description="開啟靈谷全球市場資訊系統")
     async def market_panel(self, ctx: discord.ApplicationContext):
         embed = discord.Embed(
             title="📈 靈谷全球市場資訊系統 (ValeMarket PRO)",
@@ -141,7 +141,6 @@ class MarketPanelView(View):
     async def force_sync_btn(self, button: Button, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         load_translations()
-        # 這裡可呼叫同步
         await interaction.followup.send("✅ 翻譯字典重新載入與資料庫同步完成！", ephemeral=True)
 
 class MarketSearchModal(Modal):
@@ -157,8 +156,8 @@ class MarketSearchModal(Modal):
 
     async def callback(self, interaction: discord.Interaction):
         user_query = self.item_input.value.strip()
-        # 轉換成 API/資料庫看的英文或保持中文對應
-        target_name = get_cn_name(user_query) # 若輸入英文轉中文，或反之
+        # 智慧轉換名稱
+        target_name = get_cn_name(user_query)
         
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
