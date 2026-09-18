@@ -1,0 +1,413 @@
+from datetime import datetime, timedelta
+import random
+import discord
+from discord import app_commands
+from discord.ext import commands, tasks
+from utils import (
+    activity_data,
+    save_data,
+    DATA_FILE,
+    get_wallet_balance,
+    modify_balance,
+)
+
+# 記錄被強制改名或施加debuff的狀態
+active_renames = {}  # key: "guild_id_user_id"
+active_debuffs = {}  # key: "guild_id_user_id", value: { "type": str, "expire_at": datetime }
+
+
+class ShopSelectView(discord.ui.View):
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.select(
+        placeholder="🛒 選擇你想購買或使用的公會黑市道具...",
+        custom_id="profile_shop_select_v2",
+        options=[
+            discord.selects.SelectOption(
+                label="📢 全群廣播 (大聲公)",
+                description="售價: 400 幣 | 全伺服器高調廣播一句話",
+                value="buy_megaphone",
+            ),
+            discord.selects.SelectOption(
+                label="🔀 強制改名卡 (24小時)",
+                description="售價: 1000 幣 | 把好兄弟名字改掉24小時後自動還原",
+                value="buy_rename_card",
+            ),
+            discord.selects.SelectOption(
+                label="🛡️ 贖罪券 (免死金牌)",
+                description="售價: 800 幣 | 買個心安，免除一次處罰或賭輸代價",
+                value="buy_shield",
+            ),
+            discord.selects.SelectOption(
+                label="🔀 發言倒裝句咒語 (1小時)",
+                description="售價: 450 幣 | 讓指定成員講話變成亂序倒裝句",
+                value="buy_reverse_spell",
+            ),
+            discord.selects.SelectOption(
+                label="🧩 打碼馬賽克眼鏡 (2小時)",
+                description="售價: 300 幣 | 讓指定成員發言隨機夾帶馬賽克黑條",
+                value="buy_mosaic_glasses",
+            ),
+        ],
+    )
+    async def select_callback(
+        self, interaction: discord.Interaction, select: discord.ui.Select
+    ):
+        choice = select.values[0]
+        user_id = str(interaction.user.id)
+        wallet = get_wallet_balance(user_id)
+
+        # 商品定價表
+        prices = {
+            "buy_megaphone": 400,
+            "buy_rename_card": 1000,
+            "buy_shield": 800,
+            "buy_reverse_spell": 450,
+            "buy_mosaic_glasses": 300,
+        }
+
+        cost = prices.get(choice, 0)
+        if wallet < cost:
+            await interaction.response.send_message(
+                f"❌ 你的 SU 幣不足！目前錢包餘額：**{wallet} SU 幣**，此商品需要 **{cost} SU 幣**。",
+                ephemeral=True,
+            )
+            return
+
+        # 針對不同商品觸發對應的互動或直接扣款
+        if choice == "buy_rename_card":
+            await interaction.response.send_modal(RenameMovieModal(cost))
+        elif choice == "buy_megaphone":
+            await interaction.response.send_modal(MegaphoneMovieModal(cost))
+        elif choice == "buy_reverse_spell":
+            await interaction.response.send_modal(
+                TargetDebuffModal(cost, "reverse_spell", "發言倒裝句咒語", 1)
+            )
+        elif choice == "buy_mosaic_glasses":
+            await interaction.response.send_modal(
+                TargetDebuffModal(cost, "mosaic_glasses", "打碼馬賽克眼鏡", 2)
+            )
+        elif choice == "buy_shield":
+            modify_balance(
+                user_id,
+                -cost,
+                tx_type="buy_shop_shield",
+                sender_id="SHOP_SYSTEM",
+            )
+            await interaction.response.send_message(
+                "🛡️ 購買成功！你獲得了一張【贖罪券】，已放入你的背包（系統已自動幫你記錄防禦狀態）。",
+                ephemeral=True,
+            )
+
+
+# 📢 大聲公 Modal
+class MegaphoneMovieModal(discord.ui.Modal, title="📢 發布全群廣播"):
+    message_content = discord.ui.TextInput(
+        label="想廣播的內容",
+        style=discord.TextStyle.paragraph,
+        placeholder="輸入你想全伺服器大喊的幹話...",
+        max_length=200,
+    )
+
+    def __init__(self, cost):
+        super().__init__()
+        self.cost = cost
+
+    async def on_submit(self, interaction: discord.Interaction):
+        user_id = str(interaction.user.id)
+        modify_balance(
+            user_id,
+            -self.cost,
+            tx_type="buy_megaphone",
+            sender_id="SHOP_SYSTEM",
+        )
+
+        embed = discord.Embed(
+            title="📢 【公會大聲公廣播】",
+            description=f"{interaction.user.mention} 大喊：\n> **{self.message_content.value}**",
+            color=discord.Color.gold(),
+        )
+        await interaction.channel.send(embed=embed)
+        await interaction.response.send_message(
+            "✅ 廣播已成功發送！", ephemeral=True
+        )
+
+
+# 🔀 強制改名卡 Modal
+class RenameMovieModal(discord.ui.Modal, title="🔀 使用強制改名卡"):
+    target_name = discord.ui.TextInput(
+        label="受害者名字或 ID",
+        placeholder="請輸入你要整的人的 Discord 名稱...",
+        max_length=50,
+    )
+    new_nickname = discord.ui.TextInput(
+        label="指定的新暱稱",
+        placeholder="例如: 本群第一大水魚",
+        max_length=32,
+    )
+
+    def __init__(self, cost):
+        super().__init__()
+        self.cost = cost
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        target_str = self.target_name.value.strip()
+        new_nick = self.new_nickname.value.strip()
+
+        target_member = discord.utils.find(
+            lambda m: target_str in m.name or target_str in m.display_name,
+            guild.members,
+        )
+
+        if not target_member:
+            await interaction.response.send_message(
+                f"❌ 找不到名為 `{target_str}` 的成員！", ephemeral=True
+            )
+            return
+
+        if target_member.bot:
+            await interaction.response.send_message(
+                "❌ 不能對機器人使用！", ephemeral=True
+            )
+            return
+
+        user_id = str(interaction.user.id)
+        modify_balance(
+            user_id,
+            -self.cost,
+            tx_type="buy_rename_card",
+            sender_id="SHOP_SYSTEM",
+        )
+
+        timer_key = f"{guild.id}_{target_member.id}"
+        original_display = target_member.display_name
+
+        try:
+            await target_member.edit(
+                nick=new_nick, reason=f"由 {interaction.user} 使用強制改名卡"
+            )
+            expire_time = datetime.now() + timedelta(hours=24)
+            active_renames[timer_key] = {
+                "guild_id": guild.id,
+                "user_id": target_member.id,
+                "original_name": original_display,
+                "expire_at": expire_time,
+            }
+
+            await interaction.response.send_message(
+                f"🎯 施法成功！已將 **{original_display}** 改為 **{new_nick}**（24小時後自動還原）！",
+                ephemeral=True,
+            )
+            if guild.system_channel:
+                await guild.system_channel.send(
+                    f"🚨 **【公會惡整事件】** {interaction.user.mention} 對 **{original_display}** 施展了【強制改名卡】，變更為 `{new_nick}`！🃏"
+                )
+        except Exception as e:
+            await interaction.response.send_message(
+                f"❌ 改名失敗（權限不足）：{e}", ephemeral=True
+            )
+
+
+# 🎯 通用 Debuff 道具 Modal（倒裝句 / 馬賽克眼鏡）
+class TargetDebuffModal(discord.ui.Modal):
+
+    target_name = discord.ui.TextInput(
+        label="受害者名字或 ID",
+        placeholder="請輸入你要施法的成員名稱...",
+        max_length=50,
+    )
+
+    def __init__(self, cost, debuff_type, item_name, hours):
+        super().__init__(title=f"施放【{item_name}】")
+        self.cost = cost
+        self.debuff_type = debuff_type
+        self.item_name = item_name
+        self.hours = hours
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        target_str = self.target_name.value.strip()
+
+        target_member = discord.utils.find(
+            lambda m: target_str in m.name or target_str in m.display_name,
+            guild.members,
+        )
+
+        if not target_member:
+            await interaction.response.send_message(
+                f"❌ 找不到名為 `{target_str}` 的成員！", ephemeral=True
+            )
+            return
+
+        if target_member.bot:
+            await interaction.response.send_message(
+                "❌ 不能對機器人施法！", ephemeral=True
+            )
+            return
+
+        user_id = str(interaction.user.id)
+        modify_balance(
+            user_id,
+            -self.cost,
+            tx_type=f"buy_{self.debuff_type}",
+            sender_id="SHOP_SYSTEM",
+        )
+
+        key = f"{guild.id}_{target_member.id}"
+        expire_time = datetime.now() + timedelta(hours=self.hours)
+        active_debuffs[key] = {
+            "guild_id": guild.id,
+            "user_id": target_member.id,
+            "type": self.debuff_type,
+            "expire_at": expire_time,
+        }
+
+        await interaction.response.send_message(
+            f"🎯 施法成功！已對 **{target_member.display_name}** 施加【{self.item_name}】，持續 {self.hours} 小時！",
+            ephemeral=True,
+        )
+        if guild.system_channel:
+            await guild.system_channel.send(
+                f"🔮 **【黑市詛咒】** {interaction.user.mention} 成功對 **{target_member.display_name}** 施展了 **{self.item_name}**！"
+            )
+
+
+class ProfileShopCog(commands.Cog):
+
+    def __init__(self, bot):
+        self.bot = bot
+        if not self.shop_timer_task.is_running():
+            self.shop_timer_task.start()
+
+    def cog_unload(self):
+        self.shop_timer_task.cancel()
+
+    # ⏱️ 背景定時任務：檢查改名卡與 Debuff 是否過期
+    @tasks.loop(minutes=1)
+    async def shop_timer_task(self):
+        now = datetime.now()
+
+        # 1. 檢查改名卡還原
+        expired_renames = []
+        for key, data in active_renames.items():
+            if now >= data["expire_at"]:
+                expired_renames.append(key)
+                guild = self.bot.get_guild(data["guild_id"])
+                if not guild:
+                    continue
+                member = guild.get_member(data["user_id"])
+                if member:
+                    try:
+                        await member.edit(
+                            nick=None, reason="強制改名卡效期屆滿，自動還原"
+                        )
+                        if guild.system_channel:
+                            await guild.system_channel.send(
+                                f"⏳ **【時效屆滿】** **{member.display_name}** 的強制改名卡效期已過，名字已自動恢復正常！"
+                            )
+                    except Exception:
+                        pass
+        for k in expired_renames:
+            active_renames.pop(k, None)
+
+        # 2. 檢查 Debuff 過期
+        expired_debuffs = []
+        for key, data in active_debuffs.items():
+            if now >= data["expire_at"]:
+                expired_debuffs.append(key)
+        for k in expired_debuffs:
+            active_debuffs.pop(k, None)
+
+    @shop_timer_task.before_loop
+    async def before_shop_timer(self):
+        await self.bot.wait_until_ready()
+
+    # 💬 監聽聊天訊息：處理倒裝句與馬賽克眼鏡的特效
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.message.Message):
+        if message.author.bot or not message.guild:
+            return
+
+        key = f"{message.guild.id}_{message.author.id}"
+        if key not in active_debuffs:
+            return
+
+        debuff = active_debuffs[key]
+        content = message.content
+
+        # 如果被施加「發言倒裝句咒語」
+        if debuff["type"] == "reverse_spell":
+            words = list(content)
+            random.shuffle(words)
+            reversed_text = "".join(words)
+            try:
+                await message.delete()
+                await message.channel.send(
+                    f"🌀 `{message.author.display_name}` 講話被詛咒了：\n> {reversed_text}"
+                )
+            except Exception:
+                pass
+
+        # 如果被施加「打碼馬賽克眼鏡」
+        elif debuff["type"] == "mosaic_glasses":
+            words = content.split()
+            if words:
+                idx = random.randint(0, len(words) - 1)
+                words[idx] = f"||{words[idx]}||"
+                mosaic_text = " ".join(words)
+                try:
+                    await message.delete()
+                    await message.channel.send(
+                        f"🧩 `{message.author.display_name}` 戴著馬賽克眼鏡喊道：\n> {mosaic_text}"
+                    )
+                except Exception:
+                    pass
+
+    @app_commands.command(
+        name="商店", description="開啟公會黑市道具商店，選購趣味與整人道具"
+    )
+    async def open_shop(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="🛒 【冒險者公會黑市商店】",
+            description=(
+                "歡迎來到地下黑市！使用平時賺取的 **SU 幣** 選購惡整與防禦道具吧！\n\n"
+                "🔹 **📢 全群廣播** (400 幣) - 全群高調喊話\n"
+                "🔹 **🔀 強制改名卡** (1000 幣) - 惡整好友 24 小時自動還原\n"
+                "🔹 **🛡️ 贖罪券** (800 幣) - 免除處罰的保命符\n"
+                "🔹 **🔀 發言倒裝句咒語** (450 幣) - 讓對方說話變成亂序倒裝句 (1小時)\n"
+                "🔹 **🧩 打碼馬賽克眼鏡** (300 幣) - 隨機將對方的發言打上黑條 (2小時)\n\n"
+                "👇 請從下方選單挑選你想購買的道具："
+            ),
+            color=discord.Color.dark_purple(),
+        )
+        view = ShopSelectView()
+        await interaction.response.send_message(
+            embed=embed, view=view, ephemeral=True
+        )
+
+    @app_commands.command(
+        name="架設商店卡", description="在目前頻道架設永久黑市商店面板 (限管理員)"
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def setup_shop_card(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="🛒 【公會常設黑市商店】",
+            description=(
+                "隨時點擊下方選單購買各類整人與實用道具！\n\n"
+                "📢 **全群廣播** | 🔀 **強制改名卡** | 🛡️ **贖罪券**\n"
+                "🔀 **倒裝句咒語** | 🧩 **馬賽克眼鏡**"
+            ),
+            color=discord.Color.purple(),
+        )
+        view = ShopSelectView()
+        await interaction.channel.send(embed=embed, view=view)
+        await interaction.response.send_message(
+            "✅ 永久黑市商店面板已成功架設於此頻道！", ephemeral=True
+        )
+
+
+async def setup(bot):
+    await bot.add_cog(ProfileShopCog(bot))
