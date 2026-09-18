@@ -11,6 +11,10 @@ DB_FILE = "guild_database.db"
 MARKET_API_URL = "https://market.spiritvalers.com/api"
 TRANSLATION_FILES = ["items.txt1.txt", "items.txt2.txt", "items.txt3.txt"]
 
+# 💡 【選填】如果你希望指令秒速出現，可以把你的 Discord 伺服器 ID 填在這裡（例如：[123456789012345678]）
+# 如果留空 []，則維持全域註冊（但 Discord 可能會延遲顯示）
+MY_GUILD_IDS = []  # 範例：[123456789012345678]
+
 GLOBAL_EN_TO_CN = {}
 GLOBAL_CN_TO_EN = {}
 
@@ -36,7 +40,6 @@ def load_translations():
                 print(f"[Market] 載入翻譯檔 {filename} 失敗: {e}")
 
 def get_cn_name(en_name: str) -> str:
-    # 支援模糊對應或直接回傳
     if not en_name:
         return "未知道具"
     return GLOBAL_EN_TO_CN.get(en_name, en_name)
@@ -107,7 +110,6 @@ class ValeMarketPro(commands.Cog):
                     
                     for item in data.get("items", []):
                         raw_name = item.get("name")
-                        # 強制將 API 抓到的英文名稱轉成中文名稱存入資料庫
                         cn_name = get_cn_name(raw_name) 
                         
                         cursor.execute('''
@@ -121,7 +123,12 @@ class ValeMarketPro(commands.Cog):
         except Exception as e:
             print(f"[Market Sync Error] {e}")
 
-    @commands.slash_command(name="拍賣場", description="開啟靈谷全球市場資訊系統與即時行情查詢")
+    # 💡 關鍵：如果填了 MY_GUILD_IDS，指令會秒速出現在該伺服器中
+    @commands.slash_command(
+        name="拍賣場", 
+        description="開啟靈谷全球市場資訊系統與即時行情查詢",
+        guild_ids=MY_GUILD_IDS if MY_GUILD_IDS else None
+    )
     async def market_panel(self, ctx: discord.ApplicationContext):
         embed = discord.Embed(
             title="📈 靈谷全球市場資訊系統 (ValeMarket PRO)",
@@ -137,15 +144,14 @@ class MarketPanelView(View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="🔍 手動輸入查詢", style=discord.ButtonStyle.primary, custom_id="market_manual_query_btn_v2")
+    @discord.ui.button(label="🔍 手動輸入查詢", style=discord.ButtonStyle.primary, custom_id="market_manual_query_btn_v3")
     async def manual_query_btn(self, button: Button, interaction: discord.Interaction):
         await interaction.response.send_modal(MarketSearchModal())
 
-    @discord.ui.button(label="🔄 強制同步資料", style=discord.ButtonStyle.secondary, custom_id="market_force_sync_btn_v2")
+    @discord.ui.button(label="🔄 強制同步資料", style=discord.ButtonStyle.secondary, custom_id="market_force_sync_btn_v3")
     async def force_sync_btn(self, button: Button, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         load_translations()
-        # 觸發手動同步
         cog = interaction.client.get_cog("ValeMarketPro")
         if cog:
             await cog.sync_data_from_api()
@@ -164,13 +170,10 @@ class MarketSearchModal(Modal):
 
     async def callback(self, interaction: discord.Interaction):
         user_query = self.item_input.value.strip()
-        
-        # 支援雙向查詢轉換
         target_name = get_cn_name(user_query)
         
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
-        # 模糊查詢資料庫
         cursor.execute("SELECT item_name, min_price, max_price, avg_price, sample_count, last_updated FROM market_prices WHERE item_name LIKE ? OR item_name LIKE ?", (f"%{target_name}%", f"%{user_query}%"))
         row = cursor.fetchone()
         conn.close()
