@@ -13,7 +13,6 @@ def init_market_db():
         conn = sqlite3.connect("guild_database.db")
         cursor = conn.cursor()
 
-        # 1. 市場歷史價格表
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS market_prices (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -25,7 +24,6 @@ def init_market_db():
             )
         """)
 
-        # 2. 價格盯盤警報表 (加入 is_active 狀態控制)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS market_alerts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -47,9 +45,8 @@ def init_market_db():
 init_market_db()
 
 
-# ===================== 共用核心同步邏輯 (已強化單價與欄位對應) =====================
+# ===================== 共用核心同步邏輯 =====================
 async def execute_market_sync(bot=None):
-    """將 API 抓取與盯盤掃描抽離成獨立函數，精準對應遊戲市場 API 的 displayName 與 unitPrice"""
     url = "https://market-api.spiritvalers.com/v2/markets/global/snapshot"
     headers = {
         "User-Agent": (
@@ -61,19 +58,9 @@ async def execute_market_sync(bot=None):
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=headers, timeout=15) as resp:
                 if resp.status != 200:
-                    print(
-                        f"⚠️ ValeMarket API 同步失敗，狀態碼: {resp.status}"
-                    )
                     return False, f"API 狀態碼異常: {resp.status}"
+                data = await resp.json()
 
-                try:
-                    data = await resp.json()
-                except Exception:
-                    text = await resp.text()
-                    print(f"⚠️ 無法解析 JSON，原始回應: {text[:200]}")
-                    return False, "API 回傳格式非合法 JSON"
-
-        # 萬能結構解構
         raw_items = []
         if isinstance(data, list):
             raw_items = data
@@ -91,7 +78,6 @@ async def execute_market_sync(bot=None):
                 raw_items = [data]
 
         if not raw_items:
-            print(f"⚠️ 無法從 API 結構中萃取清單，原始資料型態: {type(data)}")
             return False, "找不到有效的清單陣列"
 
         conn = sqlite3.connect("guild_database.db")
@@ -104,7 +90,6 @@ async def execute_market_sync(bot=None):
             if not isinstance(item, dict):
                 continue
 
-            # 💡 優先鎖定 displayName，其次才是其他備用名稱
             item_name = (
                 item.get("displayName")
                 or item.get("itemId")
@@ -115,7 +100,6 @@ async def execute_market_sync(bot=None):
                 or "Unknown"
             )
 
-            # 💡 優先鎖定 unitPrice，確保抓到的是正確的單價
             price_raw = (
                 item.get("unitPrice")
                 or item.get("unit_price")
@@ -126,7 +110,7 @@ async def execute_market_sync(bot=None):
             )
 
             try:
-                price = int(float(price_raw))  # 轉為整數價格
+                price = int(float(price_raw))
             except (ValueError, TypeError):
                 price = 0
 
@@ -140,7 +124,7 @@ async def execute_market_sync(bot=None):
 
         conn.commit()
 
-        # --- 🚀 價格盯盤自動掃描與通知機制 ---
+        # 價格盯盤自動掃描
         cursor.execute(
             "SELECT id, user_id, item_keyword, target_price, alert_type FROM"
             " market_alerts WHERE is_active = 1"
@@ -172,7 +156,6 @@ async def execute_market_sync(bot=None):
                         (alert_id,),
                     )
                     conn.commit()
-
                     if bot:
                         try:
                             user = await bot.fetch_user(int(user_id))
@@ -183,24 +166,22 @@ async def execute_market_sync(bot=None):
                                         f"您設定的價格警報已達成！\n\n• **道具名稱**："
                                         f" `{matched_name}`\n• **設定條件**：價格 {alert_type}"
                                         f" `{target_price:,} G`\n• **最新實價**：💰"
-                                        f" `{current_price:,} G`\n\n*(此盯盤任務已自動完成並結案，如需繼續監控請重新設定)*"
+                                        f" `{current_price:,} G`"
                                     ),
                                     color=discord.Color.brand_red(),
                                 )
                                 await user.send(embed=embed)
-                        except Exception as dm_err:
-                            print(f"⚠️ 無法發送私訊給用戶 {user_id}: {dm_err}")
+                        except Exception:
+                            pass
 
         conn.close()
-        print(f"✅ 成功同步 ValeMarket 資料 ({count}筆)，並完成盯盤掃描！")
         return True, count
     except Exception as e:
-        print(f"❌ ValeMarket 自動同步或盯盤發生錯誤：{e}")
         return False, str(e)
 
 
-# ===================== 核心查詢共用邏輯 =====================
-async def perform_market_search(interaction: discord.Interaction, keyword: str):
+# ===================== 核心查詢與繪製邏輯 =====================
+async def execute_market_query_and_send(interaction: discord.Interaction, keyword: str):
     search_pattern = f"%{keyword}%"
     try:
         conn = sqlite3.connect("guild_database.db")
@@ -228,18 +209,14 @@ async def perform_market_search(interaction: discord.Interaction, keyword: str):
         stats = cursor.fetchone()
         conn.close()
     except Exception as e:
-        if interaction.response.is_done():
-            await interaction.followup.send(f"❌ 查詢資料庫失敗：{e}", ephemeral=True)
-        else:
-            await interaction.response.send_message(f"❌ 查詢資料庫失敗：{e}", ephemeral=True)
+        await interaction.followup.send(f"❌ 查詢資料庫失敗：{e}", ephemeral=True)
         return
 
     if not rows:
-        msg = f'🔍 找不到與 `"{keyword}"` 相關的市場行情，請確認名稱或英文拼寫是否正確！'
-        if interaction.response.is_done():
-            await interaction.followup.send(msg, ephemeral=True)
-        else:
-            await interaction.response.send_message(msg, ephemeral=True)
+        await interaction.followup.send(
+            f'🔍 找不到與 `"{keyword}"` 相關的市場行情，請確認名稱是否正確！',
+            ephemeral=True,
+        )
         return
 
     min_p, max_p, avg_p, total_count = (
@@ -269,38 +246,41 @@ async def perform_market_search(interaction: discord.Interaction, keyword: str):
         inline=False,
     )
     embed.set_footer(text="靈谷全球市場資訊系統 (ValeMarket PRO)")
-
-    if interaction.response.is_done():
-        await interaction.followup.send(embed=embed, ephemeral=True)
-    else:
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 
-# ===================== 1. 深度查詢 Modal 與下拉選單介面 =====================
-class MarketSearchModal(discord.ui.Modal, title="靈谷市場行情深度查詢"):
-    search_keyword = discord.ui.TextInput(
-        label="輸入道具名稱 (支援英文或關鍵字)",
-        placeholder="例如：Sprite Card",
-        required=True,
-        max_length=50,
-    )
+# ===================== 1. 熱門道具下拉選單與查詢 Modal =====================
+class HotItemsSelect(discord.ui.Select):
 
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        keyword = self.search_keyword.value.strip()
-        await perform_market_search(interaction, keyword)
-
-
-class MarketItemSelect(discord.ui.Select):
-    def __init__(self, popular_items):
-        options = [
-            discord.SelectOption(label=name[:100], value=name[:100])
-            for name in popular_items
-        ]
-        if not options:
-            options.append(
-                discord.SelectOption(label="目前尚無熱門資料，請使用手動按鈕", value="none")
+    def __init__(self):
+        try:
+            conn = sqlite3.connect("guild_database.db")
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                    SELECT DISTINCT item_name FROM market_prices 
+                    ORDER BY id DESC LIMIT 25
+                """
             )
+            rows = cursor.fetchall()
+            conn.close()
+        except Exception:
+            rows = []
+
+        options = []
+        if rows:
+            for r in rows:
+                name = r[0]
+                if len(name) > 100:
+                    name = name[:97] + "..."
+                options.append(discord.SelectOption(label=name, value=name))
+        else:
+            options.append(
+                discord.SelectOption(
+                    label="目前尚無資料，請先同步", value="none"
+                )
+            )
+
         super().__init__(
             placeholder="⚡ 從近期熱門道具中選擇快速查詢...",
             min_values=1,
@@ -311,24 +291,42 @@ class MarketItemSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         if self.values[0] == "none":
             await interaction.response.send_message(
-                "請點擊下方按鈕手動輸入關鍵字查詢！", ephemeral=True
+                "❌ 目前資料庫尚無道具，請先執行強制同步！", ephemeral=True
             )
             return
+
+        # ⚡ 關鍵防逾時機制：先搶先 defer
         await interaction.response.defer(ephemeral=True)
-        await perform_market_search(interaction, self.values[0])
+        await execute_market_query_and_send(interaction, self.values[0])
 
 
-class MarketSearchSelectView(discord.ui.View):
-    def __init__(self, popular_items):
-        super().__init__(timeout=60)
-        self.add_item(MarketItemSelect(popular_items))
+class MarketSearchModal(discord.ui.Modal, title="手動輸入道具關鍵字查詢"):
+    keyword_input = discord.ui.TextInput(
+        label="輸入道具名稱 (支援英文或關鍵字)",
+        placeholder="例如：ECHO、Card、Stone",
+        required=True,
+        max_length=50,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        # ⚡ 關鍵防逾時機制：先搶先 defer
+        await interaction.response.defer(ephemeral=True)
+        keyword = self.keyword_input.value.strip()
+        await execute_market_query_and_send(interaction, keyword)
+
+
+class MarketSearchMainView(discord.ui.View):
+
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(HotItemsSelect())
 
     @discord.ui.button(
         label="⌨️ 手動輸入關鍵字查詢",
         style=discord.ButtonStyle.primary,
-        row=1,
+        custom_id="market_manual_input_btn_v4",
     )
-    async def manual_search_btn(
+    async def manual_btn(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ):
         await interaction.response.send_modal(MarketSearchModal())
@@ -402,7 +400,7 @@ class MarketAlertModal(discord.ui.Modal, title="設定價格盯盤警報"):
             description=(
                 f"• **追蹤道具**：`{keyword}`\n• **觸發條件**：當價格 **{cond}**"
                 f" `{price:,} G` 時\n• **通知方式**：機器人將會透過 **私人訊息 (DM)**"
-                " 通知您一次\n*(註：警報觸發後會自動失效，避免疲勞轟炸)*"
+                " 通知您一次"
             ),
             color=discord.Color.green(),
         )
@@ -413,23 +411,20 @@ class MarketAlertModal(discord.ui.Modal, title="設定價格盯盤警報"):
 class CancelAlertSelect(discord.ui.Select):
 
     def __init__(self, alerts):
-        options = []
-        for alert_id, keyword, price, cond in alerts:
-            options.append(
-                discord.SelectOption(
-                    label=f"ID:{alert_id} | {keyword}",
-                    description=f"條件: {cond} {price:,} G",
-                    value=str(alert_id),
-                )
+        options = [
+            discord.SelectOption(
+                label=f"ID:{alert_id} | {keyword}",
+                description=f"條件: {cond} {price:,} G",
+                value=str(alert_id),
             )
+            for alert_id, keyword, price, cond in alerts
+        ]
         super().__init__(
-            placeholder="選擇要取消的盯盤項目...",
-            min_values=1,
-            max_values=1,
-            options=options,
+            placeholder="選擇要取消的盯盤項目...", min_values=1, max_values=1, options=options
         )
 
     async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         selected_id = self.values[0]
         try:
             conn = sqlite3.connect("guild_database.db")
@@ -440,11 +435,11 @@ class CancelAlertSelect(discord.ui.Select):
             )
             conn.commit()
             conn.close()
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"✅ 成功取消並刪除編號 `{selected_id}` 的盯盤任務！", ephemeral=True
             )
         except Exception as e:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"❌ 取消失敗：{e}", ephemeral=True
             )
 
@@ -465,26 +460,14 @@ class MarketPanelView(discord.ui.View):
     @discord.ui.button(
         label="🔍 深度查詢道具",
         style=discord.ButtonStyle.primary,
-        custom_id="persistent_market_search_btn_v2",
+        custom_id="persistent_market_query_btn_v4",
     )
-    async def search_btn(
+    async def query_btn(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ):
-        # 💡 點擊後從資料庫撈取最新熱門/出現過的道具名稱（最多25個）
-        try:
-            conn = sqlite3.connect("guild_database.db")
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT DISTINCT item_name FROM market_prices ORDER BY id DESC LIMIT 25"
-            )
-            popular_items = [row[0] for row in cursor.fetchall()]
-            conn.close()
-        except Exception:
-            popular_items = []
-
-        view = MarketSearchSelectView(popular_items)
+        view = MarketSearchMainView()
         await interaction.response.send_message(
-            "🔍 **請選擇熱門道具快速查詢，或點擊下方按鈕手動輸入關鍵字：**",
+            "🔍 請選擇熱門道具快速查詢，或點擊下方按鈕手動輸入關鍵字：",
             view=view,
             ephemeral=True,
         )
@@ -492,7 +475,7 @@ class MarketPanelView(discord.ui.View):
     @discord.ui.button(
         label="🔔 設定價格盯盤",
         style=discord.ButtonStyle.success,
-        custom_id="persistent_market_alert_btn_v2",
+        custom_id="persistent_market_alert_btn_v4",
     )
     async def alert_btn(
         self, interaction: discord.Interaction, button: discord.ui.Button
@@ -502,11 +485,12 @@ class MarketPanelView(discord.ui.View):
     @discord.ui.button(
         label="📋 管理我的盯盤",
         style=discord.ButtonStyle.secondary,
-        custom_id="persistent_market_manage_btn_v2",
+        custom_id="persistent_market_manage_btn_v4",
     )
     async def manage_btn(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ):
+        await interaction.response.defer(ephemeral=True)
         try:
             conn = sqlite3.connect("guild_database.db")
             cursor = conn.cursor()
@@ -524,13 +508,13 @@ class MarketPanelView(discord.ui.View):
             rows = []
 
         if not rows:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "📭 你目前沒有設定任何進行中的價格盯盤任務。", ephemeral=True
             )
             return
 
         view = ManageAlertsView(rows)
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "📋 **以下是你當前所有的盯盤任務，選擇下方選單即可刪除/取消：**",
             view=view,
             ephemeral=True,
@@ -539,11 +523,12 @@ class MarketPanelView(discord.ui.View):
     @discord.ui.button(
         label="📊 資料庫狀態",
         style=discord.ButtonStyle.grey,
-        custom_id="persistent_market_status_btn_v2",
+        custom_id="persistent_market_status_btn_v4",
     )
     async def status_btn(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ):
+        await interaction.response.defer(ephemeral=True)
         try:
             conn = sqlite3.connect("guild_database.db")
             cursor = conn.cursor()
@@ -560,17 +545,16 @@ class MarketPanelView(discord.ui.View):
             description=(
                 f"• 市場數據總筆數：`{count:,}` 筆\n• 進行中盯盤任務："
                 f" `{active_alerts}` 個\n• 最後同步時間："
-                f" `{last_time if last_time else '尚無資料'}`\n• 同步頻率：每 **10"
-                " 分鐘** 自動抓取全域快照"
+                f" `{last_time if last_time else '尚無資料'}`"
             ),
             color=discord.Color.blue(),
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @discord.ui.button(
         label="🔄 強制同步資料",
         style=discord.ButtonStyle.danger,
-        custom_id="persistent_market_sync_btn_v2",
+        custom_id="persistent_market_sync_btn_v4",
         row=1,
     )
     async def sync_btn(
@@ -592,7 +576,7 @@ class MarketPanelView(discord.ui.View):
             await interaction.followup.send(f"❌ 同步失敗：{result}", ephemeral=True)
 
 
-# ===================== 主 Cog (背景同步 + 盯盤檢查器) =====================
+# ===================== 主 Cog (背景同步 + 架設面板指令) =====================
 class ValeMarketSync(commands.Cog):
 
     def __init__(self, bot):
@@ -614,7 +598,7 @@ class ValeMarketSync(commands.Cog):
 
     @app_commands.command(
         name="架設市場面板",
-        description="在當前頻道架設一個常駐的靈谷全球市場查詢卡片 (PRO版+盯盤)",
+        description="在當前頻道架設一個常駐的靈谷全球市場查詢面板",
     )
     async def setup_market_panel(self, interaction: discord.Interaction):
         if not interaction.user.guild_permissions.administrator:
@@ -627,9 +611,9 @@ class ValeMarketSync(commands.Cog):
             title="📊 靈谷全球市場情報站 (ValeMarket PRO)",
             description=(
                 "歡迎使用公會專屬頂級市場經濟系統！\n\n• 🔄 每 **10 分鐘**"
-                " 自動同步全球市場最新快照。\n• 🔍 **深度查詢**：支援熱門下拉選單快選與關鍵字搜尋。\n•"
-                " 🔔 **價格盯盤**：設定目標價，達成時機器人**自動私訊通知一次**。\n• 📋"
-                " **清單管理**：隨時查看或自主取消進行中的盯盤任務。\n\n👉 **請點擊下方按鈕開始使用！**"
+                " 自動同步全球市場最新快照。\n• 🔍 **深度查詢道具**：點擊下方按鈕，可使用"
+                " **熱門道具下拉選單** 或 **手動輸入關鍵字** 查詢行情。\n• 🔔 **價格盯盤**："
+                "設定目標價，達成時機器人**自動私訊通知一次**。\n\n👉 **管理面板按鈕已在下方就緒！**"
             ),
             color=discord.Color.gold(),
         )
@@ -638,7 +622,7 @@ class ValeMarketSync(commands.Cog):
         view = MarketPanelView()
         await interaction.channel.send(embed=embed, view=view)
         await interaction.response.send_message(
-            "✅ 成功在當前頻道架設【PRO全功能版】市場查詢常駐面板！", ephemeral=True
+            "✅ 成功架設市場系統面板！", ephemeral=True
         )
 
 
