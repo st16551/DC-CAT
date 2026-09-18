@@ -25,11 +25,20 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 async def on_ready():
     print(f'目前登入身分 --> {bot.user}')
 
-    # 自動載入 cogs 資料夾底下的所有模組
+    # 直接強制載入 profile_shop 模組來追蹤詳細錯誤
+    try:
+        await bot.load_extension('cogs.profile_shop')
+        print('✅ 成功強制載入模組: profile_shop')
+    except Exception as e:
+        print(f'❌ 載入 profile_shop 失敗，錯誤原因是：{e}')
+
+    # 自動載入 cogs 資料夾底下的其他模組
     if os.path.exists('./cogs'):
         for filename in os.listdir('./cogs'):
             if filename.endswith('.py'):
                 cog_name = filename[:-3]
+                if cog_name == 'profile_shop':
+                    continue  # 剛剛已經手動載過了，跳過避免重複
                 try:
                     await bot.load_extension(f'cogs.{cog_name}')
                     print(f'已成功載入模組: {cog_name}')
