@@ -43,9 +43,9 @@ def init_market_db():
 
 init_market_db()
 
-# ===================== 共用核心同步邏輯 =====================
+# ===================== 共用核心同步邏輯 (已精準對齊 API 欄位) =====================
 async def execute_market_sync(bot=None):
-    """將 API 抓取與盯盤掃抽離成獨立函數，方便手動觸發與定時任務共用"""
+    """將 API 抓取與盯盤掃抽離成獨立函數，精準對應遊戲市場 API 的欄位"""
     url = "https://market-api.spiritvalers.com/v2/markets/global/snapshot"
     try:
         async with aiohttp.ClientSession() as session:
@@ -55,8 +55,13 @@ async def execute_market_sync(bot=None):
                     return False, f"API 狀態碼異常: {resp.status}"
                 data = await resp.json()
 
-        listings = data.get("listings", data.get("data", []))
+        # 支援多種可能的外層結構包裝
+        listings = data.get("listings", data.get("data", data.get("items", [])))
+        if not listings and isinstance(data, list):
+            listings = data
+
         if not listings:
+            print("⚠️ API 回傳的 listings 為空")
             return False, "API 回傳的 listings 為空"
 
         conn = sqlite3.connect("guild_database.db")
@@ -64,11 +69,27 @@ async def execute_market_sync(bot=None):
 
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
         count = 0
+        
         for item in listings:
-            item_name = item.get("itemName", item.get("name", "Unknown"))
-            price = int(item.get("price", item.get("unitPrice", 0)))
+            # 💡 精準對齊 API 可能的欄位名稱 (支援 itemName, name, title 等)
+            item_name = (
+                item.get("itemName") or 
+                item.get("name") or 
+                item.get("item_name") or 
+                item.get("title") or 
+                "Unknown"
+            )
             
-            if price > 0:
+            # 💡 精準對齊價格欄位 (支援 price, unitPrice, minPrice 等)
+            price = int(
+                item.get("price") or 
+                item.get("unitPrice") or 
+                item.get("unit_price") or 
+                item.get("minPrice") or 
+                0
+            )
+            
+            if item_name != "Unknown" and price > 0:
                 cursor.execute(
                     "INSERT INTO market_prices (channel_id, raw_content, item_name, price, timestamp) VALUES (?, ?, ?, ?, ?)",
                     ("ValeMarket_API", "Global Snapshot", item_name, price, now_str)
@@ -132,7 +153,7 @@ async def execute_market_sync(bot=None):
 class MarketSearchModal(discord.ui.Modal, title="靈谷市場行情深度查詢"):
     search_keyword = discord.ui.TextInput(
         label="輸入道具名稱 (支援英文或關鍵字)",
-        placeholder="例如：Sword / Ring / 靈石",
+        placeholder="例如：Eyeclops Bat Card",
         required=True,
         max_length=50
     )
@@ -192,7 +213,7 @@ class MarketSearchModal(discord.ui.Modal, title="靈谷市場行情深度查詢"
 class MarketAlertModal(discord.ui.Modal, title="設定價格盯盤警報"):
     item_keyword = discord.ui.TextInput(
         label="欲盯盤的道具關鍵字 (英文/中文)",
-        placeholder="例如：Sword",
+        placeholder="例如：Eyeclops Bat Card",
         required=True,
         max_length=50
     )
