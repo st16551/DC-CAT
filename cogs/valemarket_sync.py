@@ -43,6 +43,91 @@ def init_market_db():
 
 init_market_db()
 
+# ===================== 共用核心同步邏輯 =====================
+async def execute_market_sync(bot=None):
+    """將 API 抓取與盯盤掃抽離成獨立函數，方便手動觸發與定時任務共用"""
+    url = "https://market-api.spiritvalers.com/v2/markets/global/snapshot"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=15) as resp:
+                if resp.status != 200:
+                    print(f"⚠️ ValeMarket API 同步失敗，狀態碼: {resp.status}")
+                    return False, f"API 狀態碼異常: {resp.status}"
+                data = await resp.json()
+
+        listings = data.get("listings", data.get("data", []))
+        if not listings:
+            return False, "API 回傳的 listings 為空"
+
+        conn = sqlite3.connect("guild_database.db")
+        cursor = conn.cursor()
+
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+        count = 0
+        for item in listings:
+            item_name = item.get("itemName", item.get("name", "Unknown"))
+            price = int(item.get("price", item.get("unitPrice", 0)))
+            
+            if price > 0:
+                cursor.execute(
+                    "INSERT INTO market_prices (channel_id, raw_content, item_name, price, timestamp) VALUES (?, ?, ?, ?, ?)",
+                    ("ValeMarket_API", "Global Snapshot", item_name, price, now_str)
+                )
+                count += 1
+
+        conn.commit()
+
+        # --- 🚀 價格盯盤自動掃描與通知機制 ---
+        cursor.execute("SELECT id, user_id, item_keyword, target_price, alert_type FROM market_alerts WHERE is_active = 1")
+        alerts = cursor.fetchall()
+
+        for alert_id, user_id, keyword, target_price, alert_type in alerts:
+            cursor.execute("""
+                SELECT item_name, price FROM market_prices 
+                WHERE item_name LIKE ? 
+                ORDER BY id DESC LIMIT 1
+            """, (f"%{keyword}%",))
+            latest = cursor.fetchone()
+
+            if latest:
+                matched_name, current_price = latest
+                triggered = False
+                if alert_type == "低於" and current_price <= target_price:
+                    triggered = True
+                elif alert_type == "高於" and current_price >= target_price:
+                    triggered = True
+
+                if triggered:
+                    cursor.execute("UPDATE market_alerts SET is_active = 0 WHERE id = ?", (alert_id,))
+                    conn.commit()
+
+                    if bot:
+                        try:
+                            user = await bot.fetch_user(int(user_id))
+                            if user:
+                                embed = discord.Embed(
+                                    title="🚨 【靈谷市場盯盤觸發通知】",
+                                    description=(
+                                        f"您設定的價格警報已達成！\n\n"
+                                        f"• **道具名稱**：`{matched_name}`\n"
+                                        f"• **設定條件**：價格 {alert_type} `{target_price:,} G`\n"
+                                        f"• **最新實價**：💰 `{current_price:,} G`\n\n"
+                                        f"*(此盯盤任務已自動完成並結案，如需繼續監控請重新設定)*"
+                                    ),
+                                    color=discord.Color.brand_red()
+                                )
+                                await user.send(embed=embed)
+                        except Exception as dm_err:
+                            print(f"⚠️ 無法發送私訊給用戶 {user_id}: {dm_err}")
+
+        conn.close()
+        print(f"✅ 成功同步 ValeMarket 資料 ({count}筆)，並完成盯盤掃描！")
+        return True, count
+    except Exception as e:
+        print(f"❌ ValeMarket 自動同步或盯盤發生錯誤：{e}")
+        return False, str(e)
+
+
 # ===================== 1. 深度查詢 Modal =====================
 class MarketSearchModal(discord.ui.Modal, title="靈谷市場行情深度查詢"):
     search_keyword = discord.ui.TextInput(
@@ -273,6 +358,24 @@ class MarketPanelView(discord.ui.View):
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    @discord.ui.button(
+        label="🔄 強制同步資料", 
+        style=discord.ButtonStyle.danger, 
+        custom_id="persistent_market_sync_btn_v2",
+        row=1
+    )
+    async def sync_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ 只有管理員可以手動強制同步資料！", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        success, result = await execute_market_sync(interaction.client)
+        if success:
+            await interaction.followup.send(f"✅ 手動同步成功！本次共寫入 `{result}` 筆市場資料。", ephemeral=True)
+        else:
+            await interaction.followup.send(f"❌ 同步失敗：{result}", ephemeral=True)
+
 
 # ===================== 主 Cog (背景同步 + 盯盤檢查器) =====================
 class ValeMarketSync(commands.Cog):
@@ -285,91 +388,13 @@ class ValeMarketSync(commands.Cog):
 
     @tasks.loop(minutes=10)
     async def sync_market_data(self):
-        url = "https://market-api.spiritvalers.com/v2/markets/global/snapshot"
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=15) as resp:
-                    if resp.status != 200:
-                        print(f"⚠️ ValeMarket API 同步失敗，狀態碼: {resp.status}")
-                        return
-                    data = await resp.json()
-
-            listings = data.get("listings", data.get("data", []))
-            if not listings:
-                return
-
-            conn = sqlite3.connect("guild_database.db")
-            cursor = conn.cursor()
-
-            now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-            count = 0
-            for item in listings:
-                item_name = item.get("itemName", item.get("name", "Unknown"))
-                price = int(item.get("price", item.get("unitPrice", 0)))
-                
-                if price > 0:
-                    cursor.execute(
-                        "INSERT INTO market_prices (channel_id, raw_content, item_name, price, timestamp) VALUES (?, ?, ?, ?, ?)",
-                        ("ValeMarket_API", "Global Snapshot", item_name, price, now_str)
-                    )
-                    count += 1
-
-            conn.commit()
-
-            # --- 🚀 價格盯盤自動掃描與通知機制 ---
-            cursor.execute("SELECT id, user_id, item_keyword, target_price, alert_type FROM market_alerts WHERE is_active = 1")
-            alerts = cursor.fetchall()
-
-            for alert_id, user_id, keyword, target_price, alert_type in alerts:
-                # 檢查當前資料庫中該關鍵字的最新價格
-                cursor.execute("""
-                    SELECT item_name, price FROM market_prices 
-                    WHERE item_name LIKE ? 
-                    ORDER BY id DESC LIMIT 1
-                """, (f"%{keyword}%",))
-                latest = cursor.fetchone()
-
-                if latest:
-                    matched_name, current_price = latest
-                    triggered = False
-                    if alert_type == "低於" and current_price <= target_price:
-                        triggered = True
-                    elif alert_type == "高於" and current_price >= target_price:
-                        triggered = True
-
-                    if triggered:
-                        # 標記該警報已觸發失效 (is_active = 0)，只通知一次！
-                        cursor.execute("UPDATE market_alerts SET is_active = 0 WHERE id = ?", (alert_id,))
-                        conn.commit()
-
-                        # 嘗試私訊通知玩家
-                        try:
-                            user = await self.bot.fetch_user(int(user_id))
-                            if user:
-                                embed = discord.Embed(
-                                    title="🚨 【靈谷市場盯盤觸發通知】",
-                                    description=(
-                                        f"您設定的價格警報已達成！\n\n"
-                                        f"• **道具名稱**：`{matched_name}`\n"
-                                        f"• **設定條件**：價格 {alert_type} `{target_price:,} G`\n"
-                                        f"• **最新實價**：💰 `{current_price:,} G`\n\n"
-                                        f"*(此盯盤任務已自動完成並結案，如需繼續監控請重新設定)*"
-                                    ),
-                                    color=discord.Color.brand_red()
-                                )
-                                await user.send(embed=embed)
-                        except Exception as dm_err:
-                            print(f"⚠️ 無法發送私訊給用戶 {user_id}: {dm_err}")
-
-            conn.close()
-            print(f"✅ 成功同步 ValeMarket 資料 ({count}筆)，並完成盯盤掃描！")
-
-        except Exception as e:
-            print(f"❌ ValeMarket 自動同步或盯盤發生錯誤：{e}")
+        await execute_market_sync(self.bot)
 
     @sync_market_data.before_loop
     async def before_sync(self):
         await self.bot.wait_until_ready()
+        print("🚀 機器人已就緒，正在執行【首次開機即時同步】...")
+        await execute_market_sync(self.bot)
 
     @app_commands.command(name="架設市場面板", description="在當前頻道架設一個常駐的靈谷全球市場查詢卡片 (PRO版+盯盤)")
     async def setup_market_panel(self, interaction: discord.Interaction):
