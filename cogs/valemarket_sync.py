@@ -27,10 +27,7 @@ def load_bilingual_dictionaries():
                             if en_clean and cn_clean:
                                 en_to_cn[en_clean] = cn_clean
                                 cn_to_en[cn_clean] = en_clean
-                print(
-                    f"✅ 成功載入對照檔案：{file_name} (目前累計英文對照"
-                    f" {len(en_to_cn)} 筆)"
-                )
+                print(f"✅ 成功載入對照檔案：{file_name} (目前累計英文對照 {len(en_to_cn)} 筆)")
             except Exception as e:
                 print(f"❌ 載入對照檔案 {file_name} 失敗：{e}")
         else:
@@ -44,19 +41,21 @@ GLOBAL_EN_TO_CN, GLOBAL_CN_TO_EN = load_bilingual_dictionaries()
 
 
 def translate_to_chinese(raw_name: str) -> str:
-    """將 API 抓到的英文名稱轉換為繁體中文"""
+    """將 API 抓到的英文名稱轉換為繁體中文，若對照表沒有則返回原文並修飾"""
     if not raw_name:
-        return "Unknown"
+        return "未知道具"
     clean_name = raw_name.strip()
+    
+    # 1. 精準比對
     if clean_name in GLOBAL_EN_TO_CN:
         return GLOBAL_EN_TO_CN[clean_name]
 
-    # 忽略大小寫模糊比對英文原名
+    # 2. 忽略大小寫模糊比對英文原名
     for k, v in GLOBAL_EN_TO_CN.items():
         if k.lower() == clean_name.lower():
             return v
 
-    return clean_name  # 若找不到對照則保留原文
+    return clean_name  # 若真的找不到對照則保留原文
 
 
 # ===================== 資料庫初始化 =====================
@@ -102,8 +101,7 @@ async def execute_market_sync(bot=None):
     url = "https://market-api.spiritvalers.com/v2/markets/global/snapshot"
     headers = {
         "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
-            " like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
     }
     try:
@@ -149,10 +147,10 @@ async def execute_market_sync(bot=None):
                 or item.get("item_name")
                 or item.get("itemName")
                 or item.get("title")
-                or "Unknown"
+                or "未知道具"
             )
 
-            # 自動轉為中文儲存
+            # 強制自動轉為中文儲存
             item_name = translate_to_chinese(api_name)
 
             price_raw = (
@@ -169,31 +167,25 @@ async def execute_market_sync(bot=None):
             except (ValueError, TypeError):
                 price = 0
 
-            if item_name != "Unknown" and price > 0:
+            if item_name != "未知道具" and price > 0:
                 cursor.execute(
-                    "INSERT INTO market_prices (channel_id, raw_content, item_name,"
-                    " price, timestamp) VALUES (?, ?, ?, ?, ?)",
+                    "INSERT INTO market_prices (channel_id, raw_content, item_name, price, timestamp) VALUES (?, ?, ?, ?, ?)",
                     ("ValeMarket_API", "Global Snapshot", item_name, price, now_str),
                 )
                 count += 1
 
         conn.commit()
 
-        # 價格盯盤自動掃描 (支援中英文關鍵字比對)
+        # 價格盯盤自動掃描
         cursor.execute(
-            "SELECT id, user_id, item_keyword, target_price, alert_type FROM"
-            " market_alerts WHERE is_active = 1"
+            "SELECT id, user_id, item_keyword, target_price, alert_type FROM market_alerts WHERE is_active = 1"
         )
         alerts = cursor.fetchall()
 
         for alert_id, user_id, keyword, target_price, alert_type in alerts:
-            # 智慧轉換：如果使用者輸入英文，嘗試轉成中文搜尋；反之亦然
             search_keyword = keyword.strip()
             if search_keyword in GLOBAL_EN_TO_CN:
                 search_keyword = GLOBAL_EN_TO_CN[search_keyword]
-            elif search_keyword in GLOBAL_CN_TO_EN:
-                # 為了保險，也可同時比對原文
-                pass
 
             cursor.execute(
                 """
@@ -226,10 +218,9 @@ async def execute_market_sync(bot=None):
                                 embed = discord.Embed(
                                     title="🚨 【靈谷市場盯盤觸發通知】",
                                     description=(
-                                        f"您設定的價格警報已達成！\n\n• **道具名稱**："
-                                        f" `{matched_name}`\n• **設定條件**：價格 {alert_type}"
-                                        f" `{target_price:,} G`\n• **最新實價**：💰"
-                                        f" `{current_price:,} G`"
+                                        f"您設定的價格警報已達成！\n\n• **道具名稱**： `{matched_name}`\n"
+                                        f"• **設定條件**：價格 {alert_type} `{target_price:,} G`\n"
+                                        f"• **最新實價**：💰 `{current_price:,} G`"
                                     ),
                                     color=discord.Color.brand_red(),
                                 )
@@ -243,7 +234,7 @@ async def execute_market_sync(bot=None):
         return False, str(e)
 
 
-# ===================== 核心查詢與繪製邏輯 (支援雙向關鍵字) =====================
+# ===================== 核心查詢與繪製邏輯 =====================
 async def execute_market_query_and_send(interaction: discord.Interaction, user_input: str):
     clean_input = user_input.strip()
 
@@ -254,10 +245,7 @@ async def execute_market_query_and_send(interaction: discord.Interaction, user_i
     if clean_input in GLOBAL_CN_TO_EN:
         search_terms.append(GLOBAL_CN_TO_EN[clean_input])
 
-    # 建立 SQL 模糊查詢條件 (只要符合其中一個關鍵字即可)
     query_conditions = " OR ".join(["item_name LIKE ? COLLATE NOCASE" for _ in search_terms])
-    query_params = [f"%term%" for term in search_terms]
-    # 修正參數綁定
     query_params = [f"%{term}%" for term in search_terms]
 
     try:
@@ -304,18 +292,19 @@ async def execute_market_query_and_send(interaction: discord.Interaction, user_i
     embed = discord.Embed(
         title=f"📈 市場行情分析：{user_input}",
         description=(
-            f"📊 **大數據統計摘要**：\n• 歷史最低價：`{min_p:,}` G\n• 歷史最高價："
-            f" `{max_p:,}` G\n• 平均參考價：`{int(avg_p):,}` G\n• 累計樣本數："
-            f" `{total_count}` 筆\n----------------------------------------"
+            f"📊 **大數據統計摘要**：\n"
+            f"• 歷史最低價：`{min_p:,}` G\n"
+            f"• 歷史最高價：`{max_p:,}` G\n"
+            f"• 平均參考價：`{int(avg_p):,}` G\n"
+            f"• 累計樣本數：`{total_count}` 筆\n"
+            f"----------------------------------------"
         ),
         color=discord.Color.gold(),
     )
 
     history_text = ""
     for item_name, price, timestamp in rows[:5]:
-        history_text += (
-            f"• **{item_name}** | 💰 `{price:,}` G | ⏱️ `{timestamp}`\n"
-        )
+        history_text += f"• **{item_name}** | 💰 `{price:,}` G | ⏱️ `{timestamp}`\n"
 
     embed.add_field(
         name="🕒 最近幾筆交易/上架紀錄",
@@ -328,7 +317,6 @@ async def execute_market_query_and_send(interaction: discord.Interaction, user_i
 
 # ===================== 1. 熱門道具下拉選單與查詢 Modal =====================
 class HotItemsSelect(discord.ui.Select):
-
     def __init__(self):
         try:
             conn = sqlite3.connect("guild_database.db")
@@ -379,7 +367,7 @@ class HotItemsSelect(discord.ui.Select):
 class MarketSearchModal(discord.ui.Modal, title="輸入道具關鍵字查詢"):
     keyword_input = discord.ui.TextInput(
         label="輸入道具名稱 (支援中文、英文或關鍵字)",
-        placeholder="例如：憎惡卡片 或 Abomination Card",
+        placeholder="例如：鐵錠 或 Ingot Iron",
         required=True,
         max_length=50,
     )
@@ -391,7 +379,6 @@ class MarketSearchModal(discord.ui.Modal, title="輸入道具關鍵字查詢"):
 
 
 class MarketSearchMainView(discord.ui.View):
-
     def __init__(self):
         super().__init__(timeout=None)
         self.add_item(HotItemsSelect())
@@ -411,7 +398,7 @@ class MarketSearchMainView(discord.ui.View):
 class MarketAlertModal(discord.ui.Modal, title="設定價格盯盤警報"):
     item_keyword = discord.ui.TextInput(
         label="欲盯盤的道具名稱 (中文或英文皆可)",
-        placeholder="例如：憎惡卡片 或 Abomination Card",
+        placeholder="例如：鐵錠 或 Ingot Iron",
         required=True,
         max_length=50,
     )
@@ -473,9 +460,9 @@ class MarketAlertModal(discord.ui.Modal, title="設定價格盯盤警報"):
         embed = discord.Embed(
             title="🔔 價格盯盤設定成功！",
             description=(
-                f"• **追蹤道具**：`{keyword}`\n• **觸發條件**：當價格 **{cond}**"
-                f" `{price:,} G` 時\n• **通知方式**：機器人將會透過 **私人訊息 (DM)**"
-                " 通知您一次"
+                f"• **追蹤道具**：`{keyword}`\n"
+                f"• **觸發條件**：當價格 **{cond}** `{price:,} G` 時\n"
+                f"• **通知方式**：機器人將會透過 **私人訊息 (DM)** 通知您一次"
             ),
             color=discord.Color.green(),
         )
@@ -484,7 +471,6 @@ class MarketAlertModal(discord.ui.Modal, title="設定價格盯盤警報"):
 
 # ===================== 3. 管理我的盯盤清單 View =====================
 class CancelAlertSelect(discord.ui.Select):
-
     def __init__(self, alerts):
         options = [
             discord.SelectOption(
@@ -520,7 +506,6 @@ class CancelAlertSelect(discord.ui.Select):
 
 
 class ManageAlertsView(discord.ui.View):
-
     def __init__(self, alerts):
         super().__init__(timeout=60)
         self.add_item(CancelAlertSelect(alerts))
@@ -528,7 +513,6 @@ class ManageAlertsView(discord.ui.View):
 
 # ===================== 常駐面板的 View =====================
 class MarketPanelView(discord.ui.View):
-
     def __init__(self):
         super().__init__(timeout=None)
 
@@ -618,10 +602,10 @@ class MarketPanelView(discord.ui.View):
         embed = discord.Embed(
             title="⚙️ 靈谷市場資料庫即時狀態",
             description=(
-                f"• 市場數據總筆數：`{count:,}` 筆\n• 進行中盯盤任務："
-                f" `{active_alerts}` 個\n• 最後同步時間："
-                f" `{last_time if last_time else '尚無資料'}`\n• 雙向中英對照庫："
-                f" `{len(GLOBAL_EN_TO_CN):,}` 筆"
+                f"• 市場數據總筆數：`{count:,}` 筆\n"
+                f"• 進行中盯盤任務：`{active_alerts}` 個\n"
+                f"• 最後同步時間：`{last_time if last_time else '尚無資料'}`\n"
+                f"• 雙向中英對照庫：`{len(GLOBAL_EN_TO_CN):,}` 筆"
             ),
             color=discord.Color.blue(),
         )
@@ -646,7 +630,7 @@ class MarketPanelView(discord.ui.View):
         success, result = await execute_market_sync(interaction.client)
         if success:
             await interaction.followup.send(
-                f"✅ 手動同步成功！本次共寫入 `{result}` 筆市場資料（已完成雙向中文化對應）。",
+                f"✅ 手動同步成功！本次共寫入 `{result}` 筆市場資料（已全面完成中文化對應）。",
                 ephemeral=True,
             )
         else:
@@ -655,7 +639,6 @@ class MarketPanelView(discord.ui.View):
 
 # ===================== 主 Cog (背景同步 + 架設面板指令) =====================
 class ValeMarketSync(commands.Cog):
-
     def __init__(self, bot):
         self.bot = bot
         self.sync_market_data.start()
@@ -687,11 +670,11 @@ class ValeMarketSync(commands.Cog):
         embed = discord.Embed(
             title="📊 靈谷全球市場情報站 (ValeMarket PRO)",
             description=(
-                "歡迎使用公會專屬頂級市場經濟系統！\n\n• 🔄 每 **10 分鐘**"
-                " 自動同步全球市場最新快照。\n• 🔍 **深度查詢道具**：點擊下方按鈕，可使用"
-                " **熱門道具下拉選單** 或 **手動輸入關鍵字** 查詢行情（支援中文/英文）。\n• 🔔"
-                " **價格盯盤**：設定目標價（支援中英文），達成時機器人**自動私訊通知一次**。\n\n👉"
-                " **管理面板按鈕已在下方就緒！**"
+                "歡迎使用公會專屬頂級市場經濟系統！\n\n"
+                "• 🔄 每 **10 分鐘** 自動同步全球市場最新快照。\n"
+                "• 🔍 **深度查詢道具**：點擊下方按鈕，可使用 **熱門道具下拉選單** 或 **手動輸入關鍵字** 查詢行情（支援中文/英文）。\n"
+                "• 🔔 **價格盯盤**：設定目標價（支援中英文），達成時機器人**自動私訊通知一次**。\n\n"
+                "👉 **管理面板按鈕已在下方就緒！**"
             ),
             color=discord.Color.gold(),
         )
