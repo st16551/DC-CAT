@@ -43,26 +43,47 @@ def init_market_db():
 
 init_market_db()
 
-# ===================== 共用核心同步邏輯 =====================
+# ===================== 共用核心同步邏輯 (已整合萬能解構) =====================
 async def execute_market_sync(bot=None):
     """將 API 抓取與盯盤掃描抽離成獨立函數，精準對應遊戲市場 API 的欄位"""
     url = "https://market-api.spiritvalers.com/v2/markets/global/snapshot"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=15) as resp:
+            async with session.get(url, headers=headers, timeout=15) as resp:
                 if resp.status != 200:
                     print(f"⚠️ ValeMarket API 同步失敗，狀態碼: {resp.status}")
                     return False, f"API 狀態碼異常: {resp.status}"
-                data = await resp.json()
+                
+                try:
+                    data = await resp.json()
+                except Exception:
+                    text = await resp.text()
+                    print(f"⚠️ 無法解析 JSON，原始回應: {text[:200]}")
+                    return False, "API 回傳格式非合法 JSON"
 
-        # 支援多種可能的外層結構包裝
-        listings = data.get("listings", data.get("data", data.get("items", [])))
-        if not listings and isinstance(data, list):
-            listings = data
+        # 暴力的萬能結構解構：不管它是 dict 裡的哪個 key，或是直接就是 list
+        raw_items = []
+        if isinstance(data, list):
+            raw_items = data
+        elif isinstance(data, dict):
+            for key in ["listings", "data", "items", "result", "snapshot", "value"]:
+                if key in data and isinstance(data[key], list):
+                    raw_items = data[key]
+                    break
+            if not raw_items:
+                for val in data.values():
+                    if isinstance(val, list):
+                        raw_items = val
+                        break
+            if not raw_items and ("name" in data or "itemName" in data):
+                raw_items = [data]
 
-        if not listings:
-            print("⚠️ API 回傳的 listings 為空")
-            return False, "API 回傳的 listings 為空"
+        if not raw_items:
+            print(f"⚠️ 無法從 API 結構中萃取清單，原始資料型態: {type(data)}")
+            return False, "找不到有效的清單陣列"
 
         conn = sqlite3.connect("guild_database.db")
         cursor = conn.cursor()
@@ -70,22 +91,33 @@ async def execute_market_sync(bot=None):
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
         count = 0
         
-        for item in listings:
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+                
             item_name = (
                 item.get("itemName") or 
-                item.get("name") or 
                 item.get("item_name") or 
+                item.get("name") or 
                 item.get("title") or 
+                item.get("displayName") or
                 "Unknown"
             )
             
-            price = int(
+            price_raw = (
                 item.get("price") or 
                 item.get("unitPrice") or 
                 item.get("unit_price") or 
                 item.get("minPrice") or 
+                item.get("min_price") or
+                item.get("cost") or
                 0
             )
+            
+            try:
+                price = int(price_raw)
+            except (ValueError, TypeError):
+                price = 0
             
             if item_name != "Unknown" and price > 0:
                 cursor.execute(
@@ -103,7 +135,7 @@ async def execute_market_sync(bot=None):
         for alert_id, user_id, keyword, target_price, alert_type in alerts:
             cursor.execute("""
                 SELECT item_name, price FROM market_prices 
-                WHERE item_name LIKE ? 
+                WHERE item_name LIKE ? COLLATE NOCASE
                 ORDER BY id DESC LIMIT 1
             """, (f"%{keyword}%",))
             latest = cursor.fetchone()
@@ -147,7 +179,7 @@ async def execute_market_sync(bot=None):
         return False, str(e)
 
 
-# ===================== 1. 深度查詢 Modal (已修正逾期與防呆) =====================
+# ===================== 1. 深度查詢 Modal (已修正大小寫不分與防呆) =====================
 class MarketSearchModal(discord.ui.Modal, title="靈谷市場行情深度查詢"):
     search_keyword = discord.ui.TextInput(
         label="輸入道具名稱 (支援英文或關鍵字)",
@@ -161,22 +193,26 @@ class MarketSearchModal(discord.ui.Modal, title="靈谷市場行情深度查詢"
         await interaction.response.defer(ephemeral=True)
         
         keyword = self.search_keyword.value.strip()
+        search_pattern = f"%{keyword}%"
+        
         try:
             conn = sqlite3.connect("guild_database.db")
             cursor = conn.cursor()
+            
+            # 使用 COLLATE NOCASE 確保不分大小寫模糊搜尋
             cursor.execute("""
                 SELECT item_name, price, timestamp 
                 FROM market_prices 
-                WHERE item_name LIKE ? 
+                WHERE item_name LIKE ? COLLATE NOCASE
                 ORDER BY id DESC LIMIT 20
-            """, (f"%{keyword}%",))
+            """, (search_pattern,))
             rows = cursor.fetchall()
             
             cursor.execute("""
                 SELECT MIN(price), MAX(price), AVG(price), COUNT(*) 
                 FROM market_prices 
-                WHERE item_name LIKE ?
-            """, (f"%{keyword}%",))
+                WHERE item_name LIKE ? COLLATE NOCASE
+            """, (search_pattern,))
             stats = cursor.fetchone()
             conn.close()
         except Exception as e:
