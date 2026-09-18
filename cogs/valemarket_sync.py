@@ -1,13 +1,65 @@
 from datetime import datetime
+import json
+import os
 import sqlite3
 import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+# ===================== 載入與建立雙向中英對照字典 =====================
+TRANSLATION_FILES = ["items.txt1.txt", "items.txt2.txt", "items.txt3.txt"]
+
+
+def load_bilingual_dictionaries():
+    en_to_cn = {}
+    cn_to_en = {}
+
+    for file_name in TRANSLATION_FILES:
+        if os.path.exists(file_name):
+            try:
+                with open(file_name, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, dict):
+                        for en_key, cn_val in data.items():
+                            en_clean = str(en_key).strip()
+                            cn_clean = str(cn_val).strip()
+                            if en_clean and cn_clean:
+                                en_to_cn[en_clean] = cn_clean
+                                cn_to_en[cn_clean] = en_clean
+                print(
+                    f"✅ 成功載入對照檔案：{file_name} (目前累計英文對照"
+                    f" {len(en_to_cn)} 筆)"
+                )
+            except Exception as e:
+                print(f"❌ 載入對照檔案 {file_name} 失敗：{e}")
+        else:
+            print(f"⚠️ 找不到對照檔案：{file_name}，將略過此檔案。")
+
+    return en_to_cn, cn_to_en
+
+
+# 啟動時載入雙向對照字典
+GLOBAL_EN_TO_CN, GLOBAL_CN_TO_EN = load_bilingual_dictionaries()
+
+
+def translate_to_chinese(raw_name: str) -> str:
+    """將 API 抓到的英文名稱轉換為繁體中文"""
+    if not raw_name:
+        return "Unknown"
+    clean_name = raw_name.strip()
+    if clean_name in GLOBAL_EN_TO_CN:
+        return GLOBAL_EN_TO_CN[clean_name]
+
+    # 忽略大小寫模糊比對英文原名
+    for k, v in GLOBAL_EN_TO_CN.items():
+        if k.lower() == clean_name.lower():
+            return v
+
+    return clean_name  # 若找不到對照則保留原文
+
+
 # ===================== 資料庫初始化 =====================
-
-
 def init_market_db():
     try:
         conn = sqlite3.connect("guild_database.db")
@@ -90,7 +142,7 @@ async def execute_market_sync(bot=None):
             if not isinstance(item, dict):
                 continue
 
-            item_name = (
+            api_name = (
                 item.get("displayName")
                 or item.get("itemId")
                 or item.get("name")
@@ -99,6 +151,9 @@ async def execute_market_sync(bot=None):
                 or item.get("title")
                 or "Unknown"
             )
+
+            # 自動轉為中文儲存
+            item_name = translate_to_chinese(api_name)
 
             price_raw = (
                 item.get("unitPrice")
@@ -124,7 +179,7 @@ async def execute_market_sync(bot=None):
 
         conn.commit()
 
-        # 價格盯盤自動掃描
+        # 價格盯盤自動掃描 (支援中英文關鍵字比對)
         cursor.execute(
             "SELECT id, user_id, item_keyword, target_price, alert_type FROM"
             " market_alerts WHERE is_active = 1"
@@ -132,13 +187,21 @@ async def execute_market_sync(bot=None):
         alerts = cursor.fetchall()
 
         for alert_id, user_id, keyword, target_price, alert_type in alerts:
+            # 智慧轉換：如果使用者輸入英文，嘗試轉成中文搜尋；反之亦然
+            search_keyword = keyword.strip()
+            if search_keyword in GLOBAL_EN_TO_CN:
+                search_keyword = GLOBAL_EN_TO_CN[search_keyword]
+            elif search_keyword in GLOBAL_CN_TO_EN:
+                # 為了保險，也可同時比對原文
+                pass
+
             cursor.execute(
                 """
                     SELECT item_name, price FROM market_prices 
                     WHERE item_name LIKE ? COLLATE NOCASE
                     ORDER BY id DESC LIMIT 1
                 """,
-                (f"%{keyword}%",),
+                (f"%{search_keyword}%",),
             )
             latest = cursor.fetchone()
 
@@ -180,31 +243,45 @@ async def execute_market_sync(bot=None):
         return False, str(e)
 
 
-# ===================== 核心查詢與繪製邏輯 =====================
-async def execute_market_query_and_send(interaction: discord.Interaction, keyword: str):
-    search_pattern = f"%{keyword}%"
+# ===================== 核心查詢與繪製邏輯 (支援雙向關鍵字) =====================
+async def execute_market_query_and_send(interaction: discord.Interaction, user_input: str):
+    clean_input = user_input.strip()
+
+    # 智慧對應：把使用者的輸入同時擴充成「中文」與「英文」來搜尋資料庫
+    search_terms = [clean_input]
+    if clean_input in GLOBAL_EN_TO_CN:
+        search_terms.append(GLOBAL_EN_TO_CN[clean_input])
+    if clean_input in GLOBAL_CN_TO_EN:
+        search_terms.append(GLOBAL_CN_TO_EN[clean_input])
+
+    # 建立 SQL 模糊查詢條件 (只要符合其中一個關鍵字即可)
+    query_conditions = " OR ".join(["item_name LIKE ? COLLATE NOCASE" for _ in search_terms])
+    query_params = [f"%term%" for term in search_terms]
+    # 修正參數綁定
+    query_params = [f"%{term}%" for term in search_terms]
+
     try:
         conn = sqlite3.connect("guild_database.db")
         cursor = conn.cursor()
 
         cursor.execute(
-            """
+            f"""
                 SELECT item_name, price, timestamp 
                 FROM market_prices 
-                WHERE item_name LIKE ? COLLATE NOCASE
+                WHERE {query_conditions}
                 ORDER BY id DESC LIMIT 20
             """,
-            (search_pattern,),
+            query_params,
         )
         rows = cursor.fetchall()
 
         cursor.execute(
-            """
+            f"""
                 SELECT MIN(price), MAX(price), AVG(price), COUNT(*) 
                 FROM market_prices 
-                WHERE item_name LIKE ? COLLATE NOCASE
+                WHERE {query_conditions}
             """,
-            (search_pattern,),
+            query_params,
         )
         stats = cursor.fetchone()
         conn.close()
@@ -214,7 +291,7 @@ async def execute_market_query_and_send(interaction: discord.Interaction, keywor
 
     if not rows:
         await interaction.followup.send(
-            f'🔍 找不到與 `"{keyword}"` 相關的市場行情，請確認名稱是否正確！',
+            f'🔍 找不到與 `"{user_input}"` 相關的市場行情，請確認名稱是否正確！',
             ephemeral=True,
         )
         return
@@ -225,7 +302,7 @@ async def execute_market_query_and_send(interaction: discord.Interaction, keywor
     avg_p = avg_p or 0
 
     embed = discord.Embed(
-        title=f"📈 市場行情分析：{keyword}",
+        title=f"📈 市場行情分析：{user_input}",
         description=(
             f"📊 **大數據統計摘要**：\n• 歷史最低價：`{min_p:,}` G\n• 歷史最高價："
             f" `{max_p:,}` G\n• 平均參考價：`{int(avg_p):,}` G\n• 累計樣本數："
@@ -295,21 +372,19 @@ class HotItemsSelect(discord.ui.Select):
             )
             return
 
-        # ⚡ 關鍵防逾時機制：先搶先 defer
         await interaction.response.defer(ephemeral=True)
         await execute_market_query_and_send(interaction, self.values[0])
 
 
-class MarketSearchModal(discord.ui.Modal, title="手動輸入道具關鍵字查詢"):
+class MarketSearchModal(discord.ui.Modal, title="輸入道具關鍵字查詢"):
     keyword_input = discord.ui.TextInput(
-        label="輸入道具名稱 (支援英文或關鍵字)",
-        placeholder="例如：ECHO、Card、Stone",
+        label="輸入道具名稱 (支援中文、英文或關鍵字)",
+        placeholder="例如：憎惡卡片 或 Abomination Card",
         required=True,
         max_length=50,
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        # ⚡ 關鍵防逾時機制：先搶先 defer
         await interaction.response.defer(ephemeral=True)
         keyword = self.keyword_input.value.strip()
         await execute_market_query_and_send(interaction, keyword)
@@ -324,7 +399,7 @@ class MarketSearchMainView(discord.ui.View):
     @discord.ui.button(
         label="⌨️ 手動輸入關鍵字查詢",
         style=discord.ButtonStyle.primary,
-        custom_id="market_manual_input_btn_v4",
+        custom_id="market_manual_input_btn_v6",
     )
     async def manual_btn(
         self, interaction: discord.Interaction, button: discord.ui.Button
@@ -335,8 +410,8 @@ class MarketSearchMainView(discord.ui.View):
 # ===================== 2. 設定盯盤 Modal =====================
 class MarketAlertModal(discord.ui.Modal, title="設定價格盯盤警報"):
     item_keyword = discord.ui.TextInput(
-        label="欲盯盤的道具關鍵字 (英文/中文)",
-        placeholder="例如：Sprite Card",
+        label="欲盯盤的道具名稱 (中文或英文皆可)",
+        placeholder="例如：憎惡卡片 或 Abomination Card",
         required=True,
         max_length=50,
     )
@@ -460,14 +535,14 @@ class MarketPanelView(discord.ui.View):
     @discord.ui.button(
         label="🔍 深度查詢道具",
         style=discord.ButtonStyle.primary,
-        custom_id="persistent_market_query_btn_v4",
+        custom_id="persistent_market_query_btn_v6",
     )
     async def query_btn(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ):
         view = MarketSearchMainView()
         await interaction.response.send_message(
-            "🔍 請選擇熱門道具快速查詢，或點擊下方按鈕手動輸入關鍵字：",
+            "🔍 請選擇熱門道具快速查詢，或點擊下方按鈕手動輸入關鍵字（支援中英文）：",
             view=view,
             ephemeral=True,
         )
@@ -475,7 +550,7 @@ class MarketPanelView(discord.ui.View):
     @discord.ui.button(
         label="🔔 設定價格盯盤",
         style=discord.ButtonStyle.success,
-        custom_id="persistent_market_alert_btn_v4",
+        custom_id="persistent_market_alert_btn_v6",
     )
     async def alert_btn(
         self, interaction: discord.Interaction, button: discord.ui.Button
@@ -485,7 +560,7 @@ class MarketPanelView(discord.ui.View):
     @discord.ui.button(
         label="📋 管理我的盯盤",
         style=discord.ButtonStyle.secondary,
-        custom_id="persistent_market_manage_btn_v4",
+        custom_id="persistent_market_manage_btn_v6",
     )
     async def manage_btn(
         self, interaction: discord.Interaction, button: discord.ui.Button
@@ -523,7 +598,7 @@ class MarketPanelView(discord.ui.View):
     @discord.ui.button(
         label="📊 資料庫狀態",
         style=discord.ButtonStyle.grey,
-        custom_id="persistent_market_status_btn_v4",
+        custom_id="persistent_market_status_btn_v6",
     )
     async def status_btn(
         self, interaction: discord.Interaction, button: discord.ui.Button
@@ -545,7 +620,8 @@ class MarketPanelView(discord.ui.View):
             description=(
                 f"• 市場數據總筆數：`{count:,}` 筆\n• 進行中盯盤任務："
                 f" `{active_alerts}` 個\n• 最後同步時間："
-                f" `{last_time if last_time else '尚無資料'}`"
+                f" `{last_time if last_time else '尚無資料'}`\n• 雙向中英對照庫："
+                f" `{len(GLOBAL_EN_TO_CN):,}` 筆"
             ),
             color=discord.Color.blue(),
         )
@@ -554,7 +630,7 @@ class MarketPanelView(discord.ui.View):
     @discord.ui.button(
         label="🔄 強制同步資料",
         style=discord.ButtonStyle.danger,
-        custom_id="persistent_market_sync_btn_v4",
+        custom_id="persistent_market_sync_btn_v6",
         row=1,
     )
     async def sync_btn(
@@ -570,7 +646,8 @@ class MarketPanelView(discord.ui.View):
         success, result = await execute_market_sync(interaction.client)
         if success:
             await interaction.followup.send(
-                f"✅ 手動同步成功！本次共寫入 `{result}` 筆市場資料。", ephemeral=True
+                f"✅ 手動同步成功！本次共寫入 `{result}` 筆市場資料（已完成雙向中文化對應）。",
+                ephemeral=True,
             )
         else:
             await interaction.followup.send(f"❌ 同步失敗：{result}", ephemeral=True)
@@ -612,8 +689,9 @@ class ValeMarketSync(commands.Cog):
             description=(
                 "歡迎使用公會專屬頂級市場經濟系統！\n\n• 🔄 每 **10 分鐘**"
                 " 自動同步全球市場最新快照。\n• 🔍 **深度查詢道具**：點擊下方按鈕，可使用"
-                " **熱門道具下拉選單** 或 **手動輸入關鍵字** 查詢行情。\n• 🔔 **價格盯盤**："
-                "設定目標價，達成時機器人**自動私訊通知一次**。\n\n👉 **管理面板按鈕已在下方就緒！**"
+                " **熱門道具下拉選單** 或 **手動輸入關鍵字** 查詢行情（支援中文/英文）。\n• 🔔"
+                " **價格盯盤**：設定目標價（支援中英文），達成時機器人**自動私訊通知一次**。\n\n👉"
+                " **管理面板按鈕已在下方就緒！**"
             ),
             color=discord.Color.gold(),
         )
