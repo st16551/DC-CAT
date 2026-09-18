@@ -25,27 +25,22 @@ class ShopSelectView(discord.ui.View):
         placeholder="🛒 選擇你想購買或使用的公會黑市道具...",
         custom_id="profile_shop_select_v2",
         options=[
-            discord.selects.SelectOption(
+            discord.ui.SelectOption(
                 label="📢 全群廣播 (大聲公)",
                 description="售價: 400 幣 | 全伺服器高調廣播一句話",
                 value="buy_megaphone",
             ),
-            discord.selects.SelectOption(
+            discord.ui.SelectOption(
                 label="🔀 強制改名卡 (24小時)",
                 description="售價: 1000 幣 | 把好兄弟名字改掉24小時後自動還原",
                 value="buy_rename_card",
             ),
-            discord.selects.SelectOption(
-                label="🛡️ 贖罪券 (免死金牌)",
-                description="售價: 800 幣 | 買個心安，免除一次處罰或賭輸代價",
-                value="buy_shield",
-            ),
-            discord.selects.SelectOption(
+            discord.ui.SelectOption(
                 label="🔀 發言倒裝句咒語 (1小時)",
                 description="售價: 450 幣 | 讓指定成員講話變成亂序倒裝句",
                 value="buy_reverse_spell",
             ),
-            discord.selects.SelectOption(
+            discord.ui.SelectOption(
                 label="🧩 打碼馬賽克眼鏡 (2小時)",
                 description="售價: 300 幣 | 讓指定成員發言隨機夾帶馬賽克黑條",
                 value="buy_mosaic_glasses",
@@ -63,7 +58,6 @@ class ShopSelectView(discord.ui.View):
         prices = {
             "buy_megaphone": 400,
             "buy_rename_card": 1000,
-            "buy_shield": 800,
             "buy_reverse_spell": 450,
             "buy_mosaic_glasses": 300,
         }
@@ -88,17 +82,6 @@ class ShopSelectView(discord.ui.View):
         elif choice == "buy_mosaic_glasses":
             await interaction.response.send_modal(
                 TargetDebuffModal(cost, "mosaic_glasses", "打碼馬賽克眼鏡", 2)
-            )
-        elif choice == "buy_shield":
-            modify_balance(
-                user_id,
-                -cost,
-                tx_type="buy_shop_shield",
-                sender_id="SHOP_SYSTEM",
-            )
-            await interaction.response.send_message(
-                "🛡️ 購買成功！你獲得了一張【贖罪券】，已放入你的背包（系統已自動幫你記錄防禦狀態）。",
-                ephemeral=True,
             )
 
 
@@ -376,7 +359,6 @@ class ProfileShopCog(commands.Cog):
                 "歡迎來到地下黑市！使用平時賺取的 **SU 幣** 選購惡整與防禦道具吧！\n\n"
                 "🔹 **📢 全群廣播** (400 幣) - 全群高調喊話\n"
                 "🔹 **🔀 強制改名卡** (1000 幣) - 惡整好友 24 小時自動還原\n"
-                "🔹 **🛡️ 贖罪券** (800 幣) - 免除處罰的保命符\n"
                 "🔹 **🔀 發言倒裝句咒語** (450 幣) - 讓對方說話變成亂序倒裝句 (1小時)\n"
                 "🔹 **🧩 打碼馬賽克眼鏡** (300 幣) - 隨機將對方的發言打上黑條 (2小時)\n\n"
                 "👇 請從下方選單挑選你想購買的道具："
@@ -397,7 +379,7 @@ class ProfileShopCog(commands.Cog):
             title="🛒 【公會常設黑市商店】",
             description=(
                 "隨時點擊下方選單購買各類整人與實用道具！\n\n"
-                "📢 **全群廣播** | 🔀 **強制改名卡** | 🛡️ **贖罪券**\n"
+                "📢 **全群廣播** | 🔀 **強制改名卡**\n"
                 "🔀 **倒裝句咒語** | 🧩 **馬賽克眼鏡**"
             ),
             color=discord.Color.purple(),
