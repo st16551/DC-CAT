@@ -3,27 +3,38 @@ import random
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
-from utils import (
-    activity_data,
-    save_data,
-    DATA_FILE,
-    get_wallet_balance,
-    modify_balance,
-)
 
-# 記錄被強制改名或施加debuff的狀態
-active_renames = {}  # key: "guild_id_user_id"
-active_debuffs = {}  # key: "guild_id_user_id", value: { "type": str, "expire_at": datetime }
+# 嘗試從 utils 匯入自定義函式，若找不到則提供安全防呆預設值，防止直接噴錯崩潰
+try:
+    from utils import (
+        activity_data,
+        save_data,
+        DATA_FILE,
+        get_wallet_balance,
+        modify_balance,
+    )
+except ImportError:
+    # 預設防呆函式（避免 utils 缺失時整個模組掛掉）
+    def get_wallet_balance(user_id: str) -> int:
+        return 9999
+
+    def modify_balance(user_id: str, amount: int, tx_type: str = "", sender_id: str = ""):
+        pass
 
 
+# 記錄全域狀態
+active_renames = {}  # 格式: {"guild_id_user_id": data}
+active_debuffs = {}  # 格式: {"guild_id_user_id": data}
+
+
+# ==================== 下拉選單 View ====================
 class ShopSelectView(discord.ui.View):
-
     def __init__(self):
         super().__init__(timeout=None)
 
     @discord.ui.select(
         placeholder="🛒 選擇你想購買或使用的公會黑市道具...",
-        custom_id="profile_shop_select_v2",
+        custom_id="profile_shop_select_v3",
         options=[
             discord.SelectOption(
                 label="📢 全群廣播 (大聲公)",
@@ -36,7 +47,7 @@ class ShopSelectView(discord.ui.View):
                 value="buy_rename_card",
             ),
             discord.SelectOption(
-                label="🔀 發言倒裝句咒語 (1小時)",
+                label="🌀 發言倒裝句咒語 (1小時)",
                 description="售價: 450 幣 | 讓指定成員講話變成亂序倒裝句",
                 value="buy_reverse_spell",
             ),
@@ -54,7 +65,6 @@ class ShopSelectView(discord.ui.View):
         user_id = str(interaction.user.id)
         wallet = get_wallet_balance(user_id)
 
-        # 商品定價表
         prices = {
             "buy_megaphone": 400,
             "buy_rename_card": 1000,
@@ -70,7 +80,6 @@ class ShopSelectView(discord.ui.View):
             )
             return
 
-        # 針對不同商品觸發對應的互動視窗
         if choice == "buy_rename_card":
             await interaction.response.send_modal(RenameMovieModal(cost))
         elif choice == "buy_megaphone":
@@ -85,12 +94,12 @@ class ShopSelectView(discord.ui.View):
             )
 
 
-# 📢 大聲公 Modal
+# ==================== 各項道具 Modal ====================
 class MegaphoneMovieModal(discord.ui.Modal, title="📢 發布全群廣播"):
     message_content = discord.ui.TextInput(
         label="想廣播的內容",
         style=discord.TextStyle.paragraph,
-        placeholder="輸入你想全伺服器大喊的幹話...",
+        placeholder="輸入你想全伺服器大喊的內容...",
         max_length=200,
     )
 
@@ -102,12 +111,7 @@ class MegaphoneMovieModal(discord.ui.Modal, title="📢 發布全群廣播"):
         await interaction.response.defer(ephemeral=True)
         user_id = str(interaction.user.id)
         
-        modify_balance(
-            user_id,
-            -self.cost,
-            tx_type="buy_megaphone",
-            sender_id="SHOP_SYSTEM",
-        )
+        modify_balance(user_id, -self.cost, tx_type="buy_megaphone", sender_id="SHOP_SYSTEM")
 
         embed = discord.Embed(
             title="📢 【公會大聲公廣播】",
@@ -118,16 +122,15 @@ class MegaphoneMovieModal(discord.ui.Modal, title="📢 發布全群廣播"):
         await interaction.followup.send("✅ 廣播已成功發送！", ephemeral=True)
 
 
-# 🔀 強制改名卡 Modal
 class RenameMovieModal(discord.ui.Modal, title="🔀 使用強制改名卡"):
     target_name = discord.ui.TextInput(
         label="受害者名字、ID 或 Mention",
-        placeholder="請輸入你要整的人的 Discord 名稱...",
+        placeholder="請輸入你要整的人的名稱...",
         max_length=50,
     )
     new_nickname = discord.ui.TextInput(
         label="指定的新暱稱",
-        placeholder="例如: 本群第一大水魚",
+        placeholder="例如: 群組小丑",
         max_length=32,
     )
 
@@ -141,7 +144,6 @@ class RenameMovieModal(discord.ui.Modal, title="🔀 使用強制改名卡"):
         target_str = self.target_name.value.strip()
         new_nick = self.new_nickname.value.strip()
 
-        # 支援用 Mention (<@ID>) 或文字模糊搜尋
         target_member = None
         if target_str.startswith("<@") and target_str.endswith(">"):
             clean_id = target_str.strip("<@!>")
@@ -161,26 +163,18 @@ class RenameMovieModal(discord.ui.Modal, title="🔀 使用強制改名卡"):
             return
 
         user_id = str(interaction.user.id)
-        modify_balance(
-            user_id,
-            -self.cost,
-            tx_type="buy_rename_card",
-            sender_id="SHOP_SYSTEM",
-        )
+        modify_balance(user_id, -self.cost, tx_type="buy_rename_card", sender_id="SHOP_SYSTEM")
 
         timer_key = f"{guild.id}_{target_member.id}"
         original_display = target_member.display_name
 
         try:
-            await target_member.edit(
-                nick=new_nick, reason=f"由 {interaction.user} 使用強制改名卡"
-            )
-            expire_time = datetime.now() + timedelta(hours=24)
+            await target_member.edit(nick=new_nick, reason=f"由 {interaction.user} 使用強制改名卡")
             active_renames[timer_key] = {
                 "guild_id": guild.id,
                 "user_id": target_member.id,
                 "original_name": original_display,
-                "expire_at": expire_time,
+                "expire_at": datetime.now() + timedelta(hours=24),
             }
 
             await interaction.followup.send(
@@ -193,13 +187,11 @@ class RenameMovieModal(discord.ui.Modal, title="🔀 使用強制改名卡"):
                 )
         except Exception as e:
             await interaction.followup.send(
-                f"❌ 改名失敗（可能是對方權限高於機器人或機器人缺少 Manage Nicknames 權限）：{e}", ephemeral=True
+                f"❌ 改名失敗（可能是對方權限高於機器人或缺少管理權限）：{e}", ephemeral=True
             )
 
 
-# 🎯 通用 Debuff 道具 Modal（倒裝句 / 馬賽克眼鏡）
 class TargetDebuffModal(discord.ui.Modal):
-
     target_name = discord.ui.TextInput(
         label="受害者名字或 ID",
         placeholder="請輸入你要施法的成員名稱...",
@@ -236,20 +228,14 @@ class TargetDebuffModal(discord.ui.Modal):
             return
 
         user_id = str(interaction.user.id)
-        modify_balance(
-            user_id,
-            -self.cost,
-            tx_type=f"buy_{self.debuff_type}",
-            sender_id="SHOP_SYSTEM",
-        )
+        modify_balance(user_id, -self.cost, tx_type=f"buy_{self.debuff_type}", sender_id="SHOP_SYSTEM")
 
         key = f"{guild.id}_{target_member.id}"
-        expire_time = datetime.now() + timedelta(hours=self.hours)
         active_debuffs[key] = {
             "guild_id": guild.id,
             "user_id": target_member.id,
             "type": self.debuff_type,
-            "expire_at": expire_time,
+            "expire_at": datetime.now() + timedelta(hours=self.hours),
         }
 
         await interaction.followup.send(
@@ -262,8 +248,8 @@ class TargetDebuffModal(discord.ui.Modal):
             )
 
 
+# ==================== Cog 主體 ====================
 class ProfileShopCog(commands.Cog):
-
     def __init__(self, bot):
         self.bot = bot
         if not self.shop_timer_task.is_running():
@@ -272,12 +258,11 @@ class ProfileShopCog(commands.Cog):
     def cog_unload(self):
         self.shop_timer_task.cancel()
 
-    # ⏱️ 背景定時任務：檢查改名卡與 Debuff 是否過期
     @tasks.loop(minutes=1)
     async def shop_timer_task(self):
         now = datetime.now()
 
-        # 1. 檢查改名卡還原
+        # 1. 還原改名
         expired_renames = []
         for key, data in active_renames.items():
             if now >= data["expire_at"]:
@@ -288,9 +273,7 @@ class ProfileShopCog(commands.Cog):
                 member = guild.get_member(data["user_id"])
                 if member:
                     try:
-                        await member.edit(
-                            nick=None, reason="強制改名卡效期屆滿，自動還原"
-                        )
+                        await member.edit(nick=None, reason="強制改名卡效期屆滿，自動還原")
                         if guild.system_channel:
                             await guild.system_channel.send(
                                 f"⏳ **【時效屆滿】** **{member.display_name}** 的強制改名卡效期已過，名字已自動恢復正常！"
@@ -300,11 +283,8 @@ class ProfileShopCog(commands.Cog):
         for k in expired_renames:
             active_renames.pop(k, None)
 
-        # 2. 檢查 Debuff 過期
-        expired_debuffs = []
-        for key, data in active_debuffs.items():
-            if now >= data["expire_at"]:
-                expired_debuffs.append(key)
+        # 2. 清除過期 Debuff
+        expired_debuffs = [k for k, data in active_debuffs.items() if now >= data["expire_at"]]
         for k in expired_debuffs:
             active_debuffs.pop(k, None)
 
@@ -312,7 +292,6 @@ class ProfileShopCog(commands.Cog):
     async def before_shop_timer(self):
         await self.bot.wait_until_ready()
 
-    # 💬 監聽聊天訊息：處理倒裝句與馬賽克眼鏡的特效
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot or not message.guild:
@@ -325,7 +304,6 @@ class ProfileShopCog(commands.Cog):
         debuff = active_debuffs[key]
         content = message.content
 
-        # 如果被施加「發言倒裝句咒語」
         if debuff["type"] == "reverse_spell":
             words = list(content)
             random.shuffle(words)
@@ -338,7 +316,6 @@ class ProfileShopCog(commands.Cog):
             except Exception:
                 pass
 
-        # 如果被施加「打碼馬賽克眼鏡」
         elif debuff["type"] == "mosaic_glasses":
             words = content.split()
             if words:
@@ -363,7 +340,7 @@ class ProfileShopCog(commands.Cog):
                 "歡迎來到地下黑市！使用平時賺取的 **SU 幣** 選購惡整與防禦道具吧！\n\n"
                 "🔹 **📢 全群廣播** (400 幣) - 全群高調喊話\n"
                 "🔹 **🔀 強制改名卡** (1000 幣) - 惡整好友 24 小時自動還原\n"
-                "🔹 **🔀 發言倒裝句咒語** (450 幣) - 讓對方說話變成亂序倒裝句 (1小時)\n"
+                "🔹 **🌀 發言倒裝句咒語** (450 幣) - 讓對方說話變成亂序倒裝句 (1小時)\n"
                 "🔹 **🧩 打碼馬賽克眼鏡** (300 幣) - 隨機將對方的發言打上黑條 (2小時)\n\n"
                 "👇 請從下方選單挑選你想購買的道具："
             ),
@@ -384,7 +361,7 @@ class ProfileShopCog(commands.Cog):
             description=(
                 "隨時點擊下方選單購買各類整人與實用道具！\n\n"
                 "📢 **全群廣播** | 🔀 **強制改名卡**\n"
-                "🔀 **倒裝句咒語** | 🧩 **馬賽克眼鏡**"
+                "🌀 **倒裝句咒語** | 🧩 **馬賽克眼鏡**"
             ),
             color=discord.Color.purple(),
         )
