@@ -43,9 +43,9 @@ def init_market_db():
 
 init_market_db()
 
-# ===================== 共用核心同步邏輯 (已精準對齊 API 欄位) =====================
+# ===================== 共用核心同步邏輯 =====================
 async def execute_market_sync(bot=None):
-    """將 API 抓取與盯盤掃抽離成獨立函數，精準對應遊戲市場 API 的欄位"""
+    """將 API 抓取與盯盤掃描抽離成獨立函數，精準對應遊戲市場 API 的欄位"""
     url = "https://market-api.spiritvalers.com/v2/markets/global/snapshot"
     try:
         async with aiohttp.ClientSession() as session:
@@ -71,7 +71,6 @@ async def execute_market_sync(bot=None):
         count = 0
         
         for item in listings:
-            # 💡 精準對齊 API 可能的欄位名稱 (支援 itemName, name, title 等)
             item_name = (
                 item.get("itemName") or 
                 item.get("name") or 
@@ -80,7 +79,6 @@ async def execute_market_sync(bot=None):
                 "Unknown"
             )
             
-            # 💡 精準對齊價格欄位 (支援 price, unitPrice, minPrice 等)
             price = int(
                 item.get("price") or 
                 item.get("unitPrice") or 
@@ -149,7 +147,7 @@ async def execute_market_sync(bot=None):
         return False, str(e)
 
 
-# ===================== 1. 深度查詢 Modal =====================
+# ===================== 1. 深度查詢 Modal (已修正逾期與防呆) =====================
 class MarketSearchModal(discord.ui.Modal, title="靈谷市場行情深度查詢"):
     search_keyword = discord.ui.TextInput(
         label="輸入道具名稱 (支援英文或關鍵字)",
@@ -159,6 +157,9 @@ class MarketSearchModal(discord.ui.Modal, title="靈谷市場行情深度查詢"
     )
 
     async def on_submit(self, interaction: discord.Interaction):
+        # 🛡️ 防止 Discord 3秒限制，先進行 defer
+        await interaction.response.defer(ephemeral=True)
+        
         keyword = self.search_keyword.value.strip()
         try:
             conn = sqlite3.connect("guild_database.db")
@@ -179,14 +180,16 @@ class MarketSearchModal(discord.ui.Modal, title="靈谷市場行情深度查詢"
             stats = cursor.fetchone()
             conn.close()
         except Exception as e:
-            await interaction.response.send_message(f"❌ 查詢資料庫失敗：{e}", ephemeral=True)
+            await interaction.followup.send(f"❌ 查詢資料庫失敗：{e}", ephemeral=True)
             return
 
         if not rows:
-            await interaction.response.send_message(f"🔍 找不到與 `\"{keyword}\"` 相關的市場行情，請確認名稱或英文拼寫是否正確！", ephemeral=True)
+            await interaction.followup.send(f"🔍 找不到與 `\"{keyword}\"` 相關的市場行情，請確認名稱或英文拼寫是否正確！", ephemeral=True)
             return
 
-        min_p, max_p, avg_p, total_count = stats
+        min_p, max_p, avg_p, total_count = stats if stats and stats[3] > 0 else (0, 0, 0, 0)
+        avg_p = avg_p or 0
+
         embed = discord.Embed(
             title=f"📈 市場行情分析：{keyword}",
             description=(
@@ -206,7 +209,7 @@ class MarketSearchModal(discord.ui.Modal, title="靈谷市場行情深度查詢"
 
         embed.add_field(name="🕒 最近幾筆交易/上架紀錄", value=history_text if history_text else "無", inline=False)
         embed.set_footer(text="靈谷全球市場資訊系統 (ValeMarket PRO)")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 # ===================== 2. 設定盯盤 Modal =====================
