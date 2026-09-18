@@ -8,7 +8,7 @@ from discord.ui import View, Select, Button, Modal, TextInput
 
 # ================= 檔案設定與全域常數 =================
 DB_FILE = "guild_database.db"
-MARKET_API_URL = "https://market.spiritvalers.com/api" # 依實際 API 調整
+MARKET_API_URL = "https://market.spiritvalers.com/api"
 TRANSLATION_FILES = ["items.txt1.txt", "items.txt2.txt", "items.txt3.txt"]
 
 GLOBAL_EN_TO_CN = {}
@@ -36,6 +36,9 @@ def load_translations():
                 print(f"[Market] 載入翻譯檔 {filename} 失敗: {e}")
 
 def get_cn_name(en_name: str) -> str:
+    # 支援模糊對應或直接回傳
+    if not en_name:
+        return "未知道具"
     return GLOBAL_EN_TO_CN.get(en_name, en_name)
 
 def get_en_name(cn_name: str) -> str:
@@ -94,7 +97,7 @@ class ValeMarketPro(commands.Cog):
         load_translations()
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(f"{MARKET_API_URL}/items") as resp: # 假設的獲取清單端點
+                async with session.get(f"{MARKET_API_URL}/items") as resp:
                     if resp.status != 200:
                         return
                     data = await resp.json()
@@ -102,10 +105,10 @@ class ValeMarketPro(commands.Cog):
                     conn = sqlite3.connect(DB_FILE)
                     cursor = conn.cursor()
                     
-                    # 假設 data 迴圈寫入
                     for item in data.get("items", []):
                         raw_name = item.get("name")
-                        cn_name = get_cn_name(raw_name) # 確保存入的是中文名稱
+                        # 強制將 API 抓到的英文名稱轉成中文名稱存入資料庫
+                        cn_name = get_cn_name(raw_name) 
                         
                         cursor.execute('''
                             INSERT OR REPLACE INTO market_prices (item_name, min_price, max_price, avg_price, sample_count, last_updated)
@@ -114,14 +117,15 @@ class ValeMarketPro(commands.Cog):
                     
                     conn.commit()
                     conn.close()
+                    print("[Market] 背景數據同步與中文轉換完成")
         except Exception as e:
             print(f"[Market Sync Error] {e}")
 
-    @commands.slash_command(name="拍賣場", description="開啟靈谷全球市場資訊系統")
+    @commands.slash_command(name="拍賣場", description="開啟靈谷全球市場資訊系統與即時行情查詢")
     async def market_panel(self, ctx: discord.ApplicationContext):
         embed = discord.Embed(
             title="📈 靈谷全球市場資訊系統 (ValeMarket PRO)",
-            description="歡迎使用公會專屬智慧金融與市場分析終端。\n請透過下方按鈕或選單進行查詢與盯盤設定。",
+            description="歡迎使用公會專屬智慧金融與市場分析終端。\n請透過下方按鈕進行查詢或資料同步。",
             color=discord.Color.gold()
         )
         embed.set_footer(text="數據每 10 分鐘自動同步一次 | 支援中英文雙向對應")
@@ -133,15 +137,19 @@ class MarketPanelView(View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="🔍 手動輸入查詢", style=discord.ButtonStyle.primary, custom_id="market_manual_query_btn")
+    @discord.ui.button(label="🔍 手動輸入查詢", style=discord.ButtonStyle.primary, custom_id="market_manual_query_btn_v2")
     async def manual_query_btn(self, button: Button, interaction: discord.Interaction):
         await interaction.response.send_modal(MarketSearchModal())
 
-    @discord.ui.button(label="🔄 強制同步資料", style=discord.ButtonStyle.secondary, custom_id="market_force_sync_btn")
+    @discord.ui.button(label="🔄 強制同步資料", style=discord.ButtonStyle.secondary, custom_id="market_force_sync_btn_v2")
     async def force_sync_btn(self, button: Button, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         load_translations()
-        await interaction.followup.send("✅ 翻譯字典重新載入與資料庫同步完成！", ephemeral=True)
+        # 觸發手動同步
+        cog = interaction.client.get_cog("ValeMarketPro")
+        if cog:
+            await cog.sync_data_from_api()
+        await interaction.followup.send("✅ 翻譯字典重新載入與市場資料同步完成！", ephemeral=True)
 
 class MarketSearchModal(Modal):
     def __init__(self):
@@ -156,21 +164,24 @@ class MarketSearchModal(Modal):
 
     async def callback(self, interaction: discord.Interaction):
         user_query = self.item_input.value.strip()
-        # 智慧轉換名稱
+        
+        # 支援雙向查詢轉換
         target_name = get_cn_name(user_query)
         
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
-        cursor.execute("SELECT min_price, max_price, avg_price, sample_count, last_updated FROM market_prices WHERE item_name LIKE ?", (f"%{target_name}%",))
+        # 模糊查詢資料庫
+        cursor.execute("SELECT item_name, min_price, max_price, avg_price, sample_count, last_updated FROM market_prices WHERE item_name LIKE ? OR item_name LIKE ?", (f"%{target_name}%", f"%{user_query}%"))
         row = cursor.fetchone()
         conn.close()
 
         if not row:
-            await interaction.response.send_message(f"❌ 找不到與 **{user_query}** 相關的道具資料，請確認名稱是否正確。", ephemeral=True)
+            await interaction.response.send_message(f"❌ 找不到與 **{user_query}** 相關的道具資料，請確認名稱是否正確或是否有執行強制同步。", ephemeral=True)
             return
 
-        min_p, max_p, avg_p, count, updated = row
-        embed = discord.Embed(title=f"📊 市場行情分析：{target_name}", color=discord.Color.green())
+        db_item_name, min_p, max_p, avg_p, count, updated = row
+        
+        embed = discord.Embed(title=f"📊 市場行情分析：{db_item_name}", color=discord.Color.green())
         embed.add_field(name="📉 歷史最低價", value=f"{min_p:,} G", inline=True)
         embed.add_field(name="📈 歷史最高價", value=f"{max_p:,} G", inline=True)
         embed.add_field(name="⚖️ 平均參考價", value=f"{avg_p:,.1f} G", inline=True)
