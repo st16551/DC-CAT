@@ -25,22 +25,22 @@ class ShopSelectView(discord.ui.View):
         placeholder="🛒 選擇你想購買或使用的公會黑市道具...",
         custom_id="profile_shop_select_v2",
         options=[
-            discord.ui.SelectOption(
+            discord.SelectOption(
                 label="📢 全群廣播 (大聲公)",
                 description="售價: 400 幣 | 全伺服器高調廣播一句話",
                 value="buy_megaphone",
             ),
-            discord.ui.SelectOption(
+            discord.SelectOption(
                 label="🔀 強制改名卡 (24小時)",
                 description="售價: 1000 幣 | 把好兄弟名字改掉24小時後自動還原",
                 value="buy_rename_card",
             ),
-            discord.ui.SelectOption(
+            discord.SelectOption(
                 label="🔀 發言倒裝句咒語 (1小時)",
                 description="售價: 450 幣 | 讓指定成員講話變成亂序倒裝句",
                 value="buy_reverse_spell",
             ),
-            discord.ui.SelectOption(
+            discord.SelectOption(
                 label="🧩 打碼馬賽克眼鏡 (2小時)",
                 description="售價: 300 幣 | 讓指定成員發言隨機夾帶馬賽克黑條",
                 value="buy_mosaic_glasses",
@@ -70,7 +70,7 @@ class ShopSelectView(discord.ui.View):
             )
             return
 
-        # 針對不同商品觸發對應的互動或直接扣款
+        # 針對不同商品觸發對應的互動視窗
         if choice == "buy_rename_card":
             await interaction.response.send_modal(RenameMovieModal(cost))
         elif choice == "buy_megaphone":
@@ -99,7 +99,9 @@ class MegaphoneMovieModal(discord.ui.Modal, title="📢 發布全群廣播"):
         self.cost = cost
 
     async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         user_id = str(interaction.user.id)
+        
         modify_balance(
             user_id,
             -self.cost,
@@ -113,15 +115,13 @@ class MegaphoneMovieModal(discord.ui.Modal, title="📢 發布全群廣播"):
             color=discord.Color.gold(),
         )
         await interaction.channel.send(embed=embed)
-        await interaction.response.send_message(
-            "✅ 廣播已成功發送！", ephemeral=True
-        )
+        await interaction.followup.send("✅ 廣播已成功發送！", ephemeral=True)
 
 
 # 🔀 強制改名卡 Modal
 class RenameMovieModal(discord.ui.Modal, title="🔀 使用強制改名卡"):
     target_name = discord.ui.TextInput(
-        label="受害者名字或 ID",
+        label="受害者名字、ID 或 Mention",
         placeholder="請輸入你要整的人的 Discord 名稱...",
         max_length=50,
     )
@@ -136,25 +136,28 @@ class RenameMovieModal(discord.ui.Modal, title="🔀 使用強制改名卡"):
         self.cost = cost
 
     async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
         target_str = self.target_name.value.strip()
         new_nick = self.new_nickname.value.strip()
 
-        target_member = discord.utils.find(
-            lambda m: target_str in m.name or target_str in m.display_name,
-            guild.members,
-        )
+        # 支援用 Mention (<@ID>) 或文字模糊搜尋
+        target_member = None
+        if target_str.startswith("<@") and target_str.endswith(">"):
+            clean_id = target_str.strip("<@!>")
+            target_member = guild.get_member(int(clean_id))
+        else:
+            target_member = discord.utils.find(
+                lambda m: target_str.lower() in m.name.lower() or target_str.lower() in m.display_name.lower(),
+                guild.members,
+            )
 
         if not target_member:
-            await interaction.response.send_message(
-                f"❌ 找不到名為 `{target_str}` 的成員！", ephemeral=True
-            )
+            await interaction.followup.send(f"❌ 找不到名為 `{target_str}` 的成員！", ephemeral=True)
             return
 
         if target_member.bot:
-            await interaction.response.send_message(
-                "❌ 不能對機器人使用！", ephemeral=True
-            )
+            await interaction.followup.send("❌ 不能對機器人使用！", ephemeral=True)
             return
 
         user_id = str(interaction.user.id)
@@ -180,7 +183,7 @@ class RenameMovieModal(discord.ui.Modal, title="🔀 使用強制改名卡"):
                 "expire_at": expire_time,
             }
 
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"🎯 施法成功！已將 **{original_display}** 改為 **{new_nick}**（24小時後自動還原）！",
                 ephemeral=True,
             )
@@ -189,8 +192,8 @@ class RenameMovieModal(discord.ui.Modal, title="🔀 使用強制改名卡"):
                     f"🚨 **【公會惡整事件】** {interaction.user.mention} 對 **{original_display}** 施展了【強制改名卡】，變更為 `{new_nick}`！🃏"
                 )
         except Exception as e:
-            await interaction.response.send_message(
-                f"❌ 改名失敗（權限不足）：{e}", ephemeral=True
+            await interaction.followup.send(
+                f"❌ 改名失敗（可能是對方權限高於機器人或機器人缺少 Manage Nicknames 權限）：{e}", ephemeral=True
             )
 
 
@@ -211,24 +214,25 @@ class TargetDebuffModal(discord.ui.Modal):
         self.hours = hours
 
     async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
         target_str = self.target_name.value.strip()
 
-        target_member = discord.utils.find(
-            lambda m: target_str in m.name or target_str in m.display_name,
-            guild.members,
-        )
+        if target_str.startswith("<@") and target_str.endswith(">"):
+            clean_id = target_str.strip("<@!>")
+            target_member = guild.get_member(int(clean_id))
+        else:
+            target_member = discord.utils.find(
+                lambda m: target_str.lower() in m.name.lower() or target_str.lower() in m.display_name.lower(),
+                guild.members,
+            )
 
         if not target_member:
-            await interaction.response.send_message(
-                f"❌ 找不到名為 `{target_str}` 的成員！", ephemeral=True
-            )
+            await interaction.followup.send(f"❌ 找不到名為 `{target_str}` 的成員！", ephemeral=True)
             return
 
         if target_member.bot:
-            await interaction.response.send_message(
-                "❌ 不能對機器人施法！", ephemeral=True
-            )
+            await interaction.followup.send("❌ 不能對機器人施法！", ephemeral=True)
             return
 
         user_id = str(interaction.user.id)
@@ -248,7 +252,7 @@ class TargetDebuffModal(discord.ui.Modal):
             "expire_at": expire_time,
         }
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"🎯 施法成功！已對 **{target_member.display_name}** 施加【{self.item_name}】，持續 {self.hours} 小時！",
             ephemeral=True,
         )
@@ -310,7 +314,7 @@ class ProfileShopCog(commands.Cog):
 
     # 💬 監聽聊天訊息：處理倒裝句與馬賽克眼鏡的特效
     @commands.Cog.listener()
-    async def on_message(self, message: discord.message.Message):
+    async def on_message(self, message: discord.Message):
         if message.author.bot or not message.guild:
             return
 
