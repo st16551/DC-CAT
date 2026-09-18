@@ -4,10 +4,10 @@ from discord.ext import commands
 from datetime import datetime, timedelta
 from utils import get_wallet_balance, modify_balance
 
-# 假設這是你的黑市詛咒道具清單
+# 已經根據平衡性調整過價格與時效的黑市道具清單
 BLACK_MARKET_ITEMS = {
-    "debuff_reverse": {"name": "發言倒裝句咒語", "price": 1000, "hours": 24, "type": "reverse"},
-    "debuff_mosaic": {"name": "打碼馬賽克眼鏡", "price": 1500, "hours": 12, "type": "mosaic"},
+    "debuff_reverse": {"name": "發言倒裝句咒語", "price": 450, "hours": 1, "type": "reverse"},
+    "debuff_mosaic": {"name": "打碼馬賽克眼鏡", "price": 300, "hours": 2, "type": "mosaic"},
 }
 
 # 儲存全域活躍詛咒的字典（或從外部匯入）
@@ -140,7 +140,7 @@ class BlackMarketCog(commands.Cog):
         )
         embed.add_field(
             name="目前黑市商品", 
-            value="• **發言倒裝句咒語** (1,000 SU幣 / 24小時)\n• **打碼馬賽克眼鏡** (1,500 SU幣 / 12小時)", 
+            value="• **發言倒裝句咒語** (450 SU幣 / 1小時)\n• **打碼馬賽克眼鏡** (300 SU幣 / 2小時)", 
             inline=False
         )
         view = BlackMarketView()
