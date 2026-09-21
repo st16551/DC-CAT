@@ -1,4 +1,5 @@
 import discord
+from discord import app_commands
 from discord.ext import commands
 import wavelink
 
@@ -9,7 +10,6 @@ class MusicControlView(discord.ui.View):
 
     @discord.ui.button(label="上一首", style=discord.ButtonStyle.secondary, emoji="⏮️")
     async def prev_song(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # 這裡可依需求實作歷史播放紀錄回溯
         await interaction.response.send_message("目前佇列暫無上一首紀錄。", ephemeral=True)
 
     @discord.ui.button(label="暫停/繼續", style=discord.ButtonStyle.success, emoji="⏯️")
@@ -98,7 +98,7 @@ class Music(commands.Cog):
         if not player.playing:
             await player.play(player.queue.get())
 
-        embed = discord.VeiwEmbed if hasattr(discord, 'Embed') else discord.Embed(
+        embed = discord.Embed(
             title="🎵 成功加入音樂",
             description=f"**[{track.title}]({track.uri})**",
             color=discord.Color.green()
