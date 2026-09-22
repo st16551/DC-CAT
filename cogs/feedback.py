@@ -1,20 +1,42 @@
 # ==================================================
 # 檔案名稱：cogs/feedback.py
-# 檔案用途：公會意見回饋箱與幹部審核討論系統（結合 JSON 資料庫）
+# 檔案用途：公會意見回饋箱與幹部審核討論系統（結合 SQLite 資料庫）
 # ==================================================
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 from datetime import datetime
+import sqlite3
 
-# 匯入你們專案共用的 JSON 資料庫讀寫核心
-from utils.database import load_data, save_data
+# 資料庫檔案名稱
+DB_FILE = "guild_database.db"
+
+def init_feedback_table():
+    """確保資料庫中存在意見箱表格"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS feedbacks (
+            feedback_id TEXT PRIMARY KEY,
+            author_id INTEGER,
+            author_name TEXT,
+            content TEXT,
+            status TEXT DEFAULT '審核中',
+            handler TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+# 模組載入時自動檢查並建立表格
+init_feedback_table()
 
 # 【請設定】相關頻道與身分組 ID
 ADMIN_FEEDBACK_CHANNEL_ID = 1548406801488285706  # 意見箱審核專區頻道 ID
 DISCUSSION_CHANNEL_ID = 1548406801488285707      # 意見採納後的討論頻道 ID
-ADMIN_ROLE_ID = 1529725865024557196              # 要被 @ 叫出來討論的幹部身分組 ID
+ADMIN_ROLE_ID = 1529725865024557196             # 要被 @ 叫出來討論的幹部身分組 ID
 
 class FeedbackModal(discord.ui.Modal, title="📬 填寫公會意見回饋"):
     feedback_input = discord.ui.TextInput(
@@ -30,26 +52,18 @@ class FeedbackModal(discord.ui.Modal, title="📬 填寫公會意見回饋"):
         content = self.feedback_input.value
         created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # 1. 寫入 data.json 資料庫
-        data = load_data()
-        if "feedbacks" not in data:
-            data["feedbacks"] = {}
-
         # 產生一組唯一的意見 ID (用時間戳記)
         feedback_id = f"fb_{int(datetime.now().timestamp())}"
-        
-        feedback_entry = {
-            "id": feedback_id,
-            "author_id": author.id,
-            "author_name": author.display_name,
-            "content": content,
-            "status": "審核中",          # 狀態: 審核中 / 已採納 / 不合適
-            "handler": None,
-            "created_at": created_at
-        }
-        
-        data["feedbacks"][feedback_id] = feedback_entry
-        save_data(data)
+
+        # 1. 寫入 SQLite 資料庫
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO feedbacks (feedback_id, author_id, author_name, content, status, created_at)
+            VALUES (?, ?, ?, ?, '審核中', ?)
+        """, (feedback_id, author.id, author.display_name, content, created_at))
+        conn.commit()
+        conn.close()
 
         # 2. 建立精美的具名意見卡片，並把 feedback_id 藏在 Footer 方便對應
         embed = discord.Embed(
@@ -104,12 +118,16 @@ class FeedbackReviewView(discord.ui.View):
             await interaction.response.send_message("❌ 讀取意見編號發生錯誤！", ephemeral=True)
             return
 
-        # 更新 data.json 中的狀態
-        data = load_data()
-        if "feedbacks" in data and feedback_id in data["feedbacks"]:
-            data["feedbacks"][feedback_id]["status"] = "已採納"
-            data["feedbacks"][feedback_id]["handler"] = interaction.user.display_name
-            save_data(data)
+        # 更新 SQLite 資料庫中的狀態
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE feedbacks 
+            SET status = '已採納', handler = ? 
+            WHERE feedback_id = ?
+        """, (interaction.user.display_name, feedback_id))
+        conn.commit()
+        conn.close()
 
         # 更新 Embed 樣式
         embed.color = discord.Color.green()
@@ -156,9 +174,9 @@ class FeedbackReviewView(discord.ui.View):
                 await target_member.send(notify_text)
             except Exception:
                 pass
-            await interaction.followup.send(f"✅ 已更新狀態（已同步寫入資料庫），已轉發至討論頻道並私訊通知 {target_member.mention}。", ephemeral=True)
+            await interaction.followup.send(f"✅ 已更新狀態（已同步寫入 SQLite），已轉發至討論頻道並私訊通知 {target_member.mention}。", ephemeral=True)
         else:
-            await interaction.followup.send(f"✅ 已更新狀態（已同步寫入資料庫），並已轉發至討論頻道。", ephemeral=True)
+            await interaction.followup.send(f"✅ 已更新狀態（已同步寫入 SQLite），並已轉發至討論頻道。", ephemeral=True)
 
     @discord.ui.button(label="🔴 綜合評估不合適", style=discord.ButtonStyle.danger, custom_id="feedback_reject_btn_v4")
     async def reject_feedback(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -177,12 +195,16 @@ class FeedbackReviewView(discord.ui.View):
             await interaction.response.send_message("❌ 讀取意見編號發生錯誤！", ephemeral=True)
             return
 
-        # 更新 data.json 中的狀態
-        data = load_data()
-        if "feedbacks" in data and feedback_id in data["feedbacks"]:
-            data["feedbacks"][feedback_id]["status"] = "不合適"
-            data["feedbacks"][feedback_id]["handler"] = interaction.user.display_name
-            save_data(data)
+        # 更新 SQLite 資料庫中的狀態
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE feedbacks 
+            SET status = '不合適', handler = ? 
+            WHERE feedback_id = ?
+        """, (interaction.user.display_name, feedback_id))
+        conn.commit()
+        conn.close()
 
         embed.color = discord.Color.red()
         embed.title = "🔴 【意見綜合評估不合適】"
@@ -203,9 +225,9 @@ class FeedbackReviewView(discord.ui.View):
                 await target_member.send(notify_text)
             except Exception:
                 pass
-            await interaction.followup.send(f"✅ 已更新狀態（已同步寫入資料庫），並已嘗試私訊通知 {target_member.mention}。", ephemeral=True)
+            await interaction.followup.send(f"✅ 已更新狀態（已同步寫入 SQLite），並已嘗試私訊通知 {target_member.mention}。", ephemeral=True)
         else:
-            await interaction.followup.send(f"✅ 已更新狀態（已同步寫入資料庫）。", ephemeral=True)
+            await interaction.followup.send(f"✅ 已更新狀態（已同步寫入 SQLite）。", ephemeral=True)
 
 
 class PersistentFeedbackView(discord.ui.View):
