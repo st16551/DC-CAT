@@ -1,12 +1,13 @@
 # ==================================================
 # 檔案名稱：economy.py
-# 檔案用途：公會純資產/錢包核心模組（專責管理 SU 幣資產、幹部調幣與防負數安全機制）
+# 檔案用途：公會純資產/錢包指令模組（透過 utils/economy_helper 執行底層財務操作）
 # ==================================================
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 from utils.database import load_data, save_data
+from utils.economy_helper import update_user_coins  # 引入我們剛才建立的共用經濟核心
 
 class EconomyCog(commands.Cog):
     def __init__(self, bot):
@@ -20,20 +21,11 @@ class EconomyCog(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     async def adjust_coins(self, interaction: discord.Interaction, member: discord.Member, amount: int):
         user_id = str(member.id)
-        data = load_data()
-        if "economy_system" not in data:
-            data["economy_system"] = {}
-        
-        economy = data["economy_system"]
-        if user_id not in economy:
-            economy[user_id] = {"coins": 0, "name": member.display_name}
+        user_name = member.display_name
 
-        # 嚴格防呆：透過 max(0, ...) 確保餘額絕對不會被扣到負數
-        new_balance = max(0, economy[user_id]["coins"] + amount)
-        economy[user_id]["coins"] = new_balance
-        economy[user_id]["name"] = member.display_name
-
-        save_data(data)
+        # 直接呼叫共用經濟核心來處理加減與防負數
+        result = update_user_coins(user_id, user_name, amount)
+        new_balance = result["new_balance"]
 
         action_str = "發放" if amount >= 0 else "扣除"
         await interaction.response.send_message(
