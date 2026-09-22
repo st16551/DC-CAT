@@ -35,8 +35,8 @@ class LevelingCog(commands.Cog):
         if user_id not in users:
             users[user_id] = {"name": user_name, "xp": 0, "level": 1}
 
-        # 隨機獲得 15 ~ 25 點經驗值
-        xp_gain = random.randint(15, 25)
+        # 隨機獲得 10 ~ 20 點經驗值
+        xp_gain = random.randint(10, 20)
         users[user_id]["xp"] += xp_gain
         users[user_id]["name"] = user_name
 
