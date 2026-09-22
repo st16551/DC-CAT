@@ -1,6 +1,6 @@
 # ==================================================
 # 檔案名稱：leveling.py
-# 檔案用途：公會等級經驗值系統與整合型個人面板（支援發言加 XP、冷卻、個人面板與一鍵重製）
+# 檔案用途：公會等級經驗值系統與整合型個人面板（支援發言加 XP、冷卻、訊息計數與面板查詢）
 # ==================================================
 
 import asyncio
@@ -24,10 +24,22 @@ class LevelingCog(commands.Cog):
         user_id = str(message.author.id)
         user_name = message.author.display_name
 
+        data = load_data()
+        
+        # 1. 記錄文字發言數（供 /我的面板 顯示）
+        if "activity_system" not in data:
+            data["activity_system"] = {}
+        if user_id not in data["activity_system"]:
+            data["activity_system"][user_id] = {"voice_hours": 0.0, "msg_count": 0}
+        data["activity_system"][user_id]["msg_count"] += 1
+        data["activity_system"][user_id]["name"] = user_name
+
+        # 2. 檢查冷卻
         if user_id in self.cooldowns:
+            save_data(data) # 雖然冷卻中，但發言數還是要存入
             return
 
-        data = load_data()
+        # 3. 處理等級與經驗值
         if "leveling_system" not in data:
             data["leveling_system"] = {}
 
@@ -35,7 +47,7 @@ class LevelingCog(commands.Cog):
         if user_id not in users:
             users[user_id] = {"name": user_name, "xp": 0, "level": 1}
 
-        # 隨機獲得 10 ~ 20 點經驗值
+        # 隨機獲得 10 ~ 20 點經驗值（嚴格對齊防通膨分配表）
         xp_gain = random.randint(10, 20)
         users[user_id]["xp"] += xp_gain
         users[user_id]["name"] = user_name
@@ -83,10 +95,11 @@ class LevelingCog(commands.Cog):
         xp = user_level_data["xp"]
         xp_needed = level * 100
 
-        # 讀取經濟與活躍時數資料（若未來模組尚未建立，預設為 0）
+        # 讀取經濟資料
         economy = data.get("economy_system", {})
         coins = economy.get(user_id, {}).get("coins", 0)
 
+        # 讀取活躍時數與發言數
         activity = data.get("activity_system", {})
         voice_hours = activity.get(user_id, {}).get("voice_hours", 0.0)
         msg_count = activity.get(user_id, {}).get("msg_count", 0)
@@ -104,17 +117,14 @@ class LevelingCog(commands.Cog):
         )
         embed.set_thumbnail(url=user.display_avatar.url)
 
-        # 填入各項數據
         embed.add_field(name="📊 目前等級", value=f"**Lv. {level}**", inline=True)
         embed.add_field(name="💰 SU 幣資產", value=f"**{coins}** 枚", inline=True)
         embed.add_field(name="💬 文字發言數", value=f"**{msg_count}** 次", inline=True)
-        
         embed.add_field(name="🎧 語音陪伴時數", value=f"**{voice_hours:.1f}** 小時", inline=True)
         embed.add_field(name="📈 經驗值進度", value=f"`{progress_bar}`\n**{xp} / {xp_needed} XP**", inline=False)
 
         embed.set_footer(text="DC-CAT 模組化管理系統 • 只有你看得見此面板")
         
-        # ephemeral=True 確保只有自己看得到
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(
