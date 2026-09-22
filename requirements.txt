@@ -1,4 +1,4 @@
-discord.py
-flask
-wavelink
-yt-dlp
+discord.py>=2.3.2
+flask>=3.0.0
+wavelink>=3.0.0
+yt-dlp>=2023.12.30
