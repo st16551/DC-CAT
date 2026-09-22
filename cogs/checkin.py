@@ -1,6 +1,6 @@
 # ==================================================
 # 檔案名稱：checkin.py
-# 檔案用途：公會簽到模組（具備永久按鈕、JSON 持久化與一鍵重製功能）
+# 檔案用途：公會簽到模組（具備永久按鈕、JSON 持久化、一鍵重製與經驗/SU幣保底機制）
 # ==================================================
 
 from datetime import datetime
@@ -8,6 +8,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from utils.database import load_data, save_data
+from utils.level_helper import add_user_xp
+from utils.economy_helper import update_user_coins
 
 class PersistentCheckinView(discord.ui.View):
     """永久按鈕面板：timeout=None 確保機器人重開機後按鈕依然有效"""
@@ -40,15 +42,25 @@ class PersistentCheckinView(discord.ui.View):
             return await interaction.response.send_message("⚠️ 你今天已經簽到過了，明天請早！", ephemeral=True)
 
         # 更新簽到資料
-        user_records[user_id]["last_date"] = today_str
         user_records[user_id]["streak"] += 1
-        user_records[user_id]["name"] = user_name # 更新最新名稱
+        streak = user_records[user_id]["streak"]
+        user_records[user_id]["last_date"] = today_str
+        user_records[user_id]["name"] = user_name
 
         # 寫回 JSON 檔案
         save_data(data)
 
-        streak = user_records[user_id]["streak"]
-        await interaction.response.send_message(f"✅ 簽到成功！連續簽到天數：**{streak}** 天", ephemeral=True)
+        # 核心保底發放：150 XP ｜ 50 枚 SU 幣 + 連續簽到加碼（上限額外 50 枚）
+        xp_result = add_user_xp(user_id, user_name, xp_amount=150)
+        bonus_coins = min(streak * 2, 50)
+        total_coins_gain = 50 + bonus_coins
+        update_user_coins(user_id, user_name, amount=total_coins_gain)
+
+        msg = f"✅ 簽到成功！連續簽到天數：**{streak}** 天\n🎁 獲得獎勵：`+150 XP` ｜ `+{total_coins_gain} SU 幣`"
+        if xp_result["leveled_up"]:
+            msg += f"\n🎉 恭喜升到了 **Lv.{xp_result['new_level']}**！"
+
+        await interaction.response.send_message(msg, ephemeral=True)
 
 
 class CheckinCog(commands.Cog):
