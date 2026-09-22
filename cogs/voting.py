@@ -1,20 +1,11 @@
-# ==================================================
-# 檔案名稱：voting_system.py
-# 檔案用途：高階公會決策投票系統（支援身分組加權、防重複投票、自動結算與進度條）
-# ==================================================
-
 import asyncio
 from datetime import datetime, timedelta
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-# 簡單的記憶體儲存，實際營運若需重開機不遺失，建議改為 JSON 或資料庫儲存
-# active_polls = { "message_id": { "title": str, "options": list, "votes": dict, "end_time": datetime, "channel_id": int } }
 active_polls = {}
 
-# 身分組權重設定 (可依公會需求自行修改身分組名稱與權重)
-# 預設：一般成員 1 票，幹部 2 票，會長 3 票
 ROLE_WEIGHTS = {
     "會長": 3,
     "長老": 2,
@@ -23,8 +14,7 @@ ROLE_WEIGHTS = {
 }
 
 def get_user_vote_weight(member: discord.Member) -> int:
-    """計算使用者的投票權重"""
-    highest_weight = 1 # 預設每人 1 票
+    highest_weight = 1
     for role in member.roles:
         if role.name in ROLE_WEIGHTS:
             if ROLE_WEIGHTS[role.name] > highest_weight:
@@ -32,7 +22,6 @@ def get_user_vote_weight(member: discord.Member) -> int:
     return highest_weight
 
 def generate_poll_embed(poll_data: dict) -> discord.Embed:
-    """生成包含即時進度條的投票 Embed"""
     total_weight = sum(sum(v["weight"] for v in voters.values()) for voters in poll_data["votes"].values())
     
     embed = discord.Embed(
@@ -45,7 +34,6 @@ def generate_poll_embed(poll_data: dict) -> discord.Embed:
         option_weight = sum(v["weight"] for v in poll_data["votes"][str(idx)].values())
         percentage = (option_weight / total_weight * 100) if total_weight > 0 else 0
         
-        # 製作文字進度條 (10格)
         filled_blocks = int(percentage / 10)
         empty_blocks = 10 - filled_blocks
         progress_bar = "█" * filled_blocks + "░" * empty_blocks
@@ -64,10 +52,9 @@ class PollView(discord.ui.View):
         super().__init__(timeout=None)
         self.poll_id = poll_id
         
-        # 動態產生投票按鈕
         for idx, option_text in enumerate(options):
             button = discord.ui.Button(
-                label=option_text[:80], # Discord 按鈕文字長度限制
+                label=option_text[:80],
                 style=discord.ButtonStyle.primary,
                 custom_id=f"vote_{poll_id}_{idx}"
             )
@@ -82,21 +69,17 @@ class PollView(discord.ui.View):
                 
             user_id = str(interaction.user.id)
             
-            # 檢查是否重複投票
             for existing_option, voters in poll_data["votes"].items():
                 if user_id in voters:
                     if existing_option == str(option_idx):
                         return await interaction.response.send_message("⚠️ 你已經投過這個選項了！", ephemeral=True)
                     else:
-                        # 允許改票，先移除舊的投票紀錄
                         del poll_data["votes"][existing_option][user_id]
                         break
                         
-            # 計算權重並記錄投票
             weight = get_user_vote_weight(interaction.user)
             poll_data["votes"][str(option_idx)][user_id] = {"weight": weight}
             
-            # 更新 Embed 顯示
             new_embed = generate_poll_embed(poll_data)
             await interaction.message.edit(embed=new_embed)
             
@@ -109,7 +92,6 @@ class VotingSystemCog(commands.Cog):
         self.bot = bot
         
     async def end_poll_task(self, poll_id: str, delay_seconds: int, channel_id: int):
-        """處理自動結算投票的背景任務"""
         await asyncio.sleep(delay_seconds)
         
         poll_data = active_polls.pop(poll_id, None)
@@ -122,7 +104,6 @@ class VotingSystemCog(commands.Cog):
             
         try:
             message = await channel.fetch_message(int(poll_id))
-            # 停用所有按鈕
             view = discord.ui.View.from_message(message)
             for child in view.children:
                 child.disabled = True
@@ -131,7 +112,6 @@ class VotingSystemCog(commands.Cog):
             embed.title = f"🏁 [已結算] 公會決議：{poll_data['title']}"
             embed.color = discord.Color.green()
             
-            # 計算贏家
             total_weight = sum(sum(v["weight"] for v in voters.values()) for voters in poll_data["votes"].values())
             if total_weight == 0:
                 result_text = "無人參與投票，本次決議無效。"
@@ -157,7 +137,7 @@ class VotingSystemCog(commands.Cog):
             await channel.send(f"📢 **投票已自動結算！** 請查看上方 {message.jump_url} 的最終結果。")
             
         except discord.NotFound:
-            pass # 訊息可能被刪除了
+            pass
 
     @app_commands.command(
         name="發起投票",
@@ -189,7 +169,6 @@ class VotingSystemCog(commands.Cog):
             
         end_time = datetime.now() + timedelta(hours=duration_hours)
         
-        # 建立初始資料結構
         temp_votes = {str(i): {} for i in range(len(options))}
         
         poll_data = {
@@ -200,7 +179,6 @@ class VotingSystemCog(commands.Cog):
             "channel_id": interaction.channel_id
         }
         
-        # 先發送訊息以取得 Message ID
         embed = discord.Embed(
             title=f"📊 公會決議：{title}",
             description="正在建立投票系統...",
@@ -210,15 +188,12 @@ class VotingSystemCog(commands.Cog):
         message = await interaction.original_response()
         poll_id = str(message.id)
         
-        # 寫入全局字典
         active_polls[poll_id] = poll_data
         
-        # 更新正式的 Embed 與按鈕
         final_embed = generate_poll_embed(poll_data)
         view = PollView(poll_id, options)
         await message.edit(embed=final_embed, view=view)
         
-        # 啟動自動結算背景排程
         delay_seconds = int(duration_hours * 3600)
         self.bot.loop.create_task(self.end_poll_task(poll_id, delay_seconds, interaction.channel_id))
 
