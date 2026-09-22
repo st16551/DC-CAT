@@ -1,8 +1,3 @@
-# ==================================================
-# 檔案名稱：leveling.py
-# 檔案用途：公會等級經驗值系統與整合型個人面板（支援發言加 XP、冷卻、訊息計數與面板查詢）
-# ==================================================
-
 import asyncio
 from datetime import datetime
 import random
@@ -26,7 +21,7 @@ class LevelingCog(commands.Cog):
 
         data = load_data()
         
-        # 1. 記錄文字發言數（供 /我的面板 顯示）
+        # 1. 記錄文字發言數
         if "activity_system" not in data:
             data["activity_system"] = {}
         if user_id not in data["activity_system"]:
@@ -36,7 +31,7 @@ class LevelingCog(commands.Cog):
 
         # 2. 檢查冷卻
         if user_id in self.cooldowns:
-            save_data(data) # 雖然冷卻中，但發言數還是要存入
+            save_data(data)
             return
 
         # 3. 處理等級與經驗值
@@ -47,7 +42,6 @@ class LevelingCog(commands.Cog):
         if user_id not in users:
             users[user_id] = {"name": user_name, "xp": 0, "level": 1}
 
-        # 隨機獲得 10 ~ 20 點經驗值（嚴格對齊防通膨分配表）
         xp_gain = random.randint(10, 20)
         users[user_id]["xp"] += xp_gain
         users[user_id]["name"] = user_name
@@ -70,7 +64,6 @@ class LevelingCog(commands.Cog):
 
         save_data(data)
 
-        # 加入 60 秒冷卻
         self.cooldowns.add(user_id)
         self.bot.loop.create_task(self.remove_cooldown(user_id, 60))
 
@@ -88,23 +81,19 @@ class LevelingCog(commands.Cog):
 
         data = load_data()
         
-        # 讀取等級資料
         levels = data.get("leveling_system", {})
         user_level_data = levels.get(user_id, {"level": 1, "xp": 0})
         level = user_level_data["level"]
         xp = user_level_data["xp"]
         xp_needed = level * 100
 
-        # 讀取經濟資料
         economy = data.get("economy_system", {})
         coins = economy.get(user_id, {}).get("coins", 0)
 
-        # 讀取活躍時數與發言數
         activity = data.get("activity_system", {})
         voice_hours = activity.get(user_id, {}).get("voice_hours", 0.0)
         msg_count = activity.get(user_id, {}).get("msg_count", 0)
 
-        # 製作經驗值進度條
         percentage = min(xp / xp_needed, 1.0)
         filled_blocks = int(percentage * 10)
         empty_blocks = 10 - filled_blocks
@@ -115,7 +104,8 @@ class LevelingCog(commands.Cog):
             description="以下為你在公會中的各項成長數據：",
             color=discord.Color.teal()
         )
-        embed.set_thumbnail(url=user.display_avatar.url)
+        if user.display_avatar:
+            embed.set_thumbnail(url=user.display_avatar.url)
 
         embed.add_field(name="📊 目前等級", value=f"**Lv. {level}**", inline=True)
         embed.add_field(name="💰 SU 幣資產", value=f"**{coins}** 枚", inline=True)
