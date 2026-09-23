@@ -1,4 +1,8 @@
-# utils/database_sqlite.py
+# ==================================================
+# 檔案名稱：utils/database.py
+# 檔案用途：SQLite 資料庫核心初始化與連線管理
+# ==================================================
+
 import sqlite3
 
 DB_FILE = "guild_database.db"
@@ -42,7 +46,7 @@ def init_db():
         )
     """)
 
-    # 4. 意見回饋箱表 (全面收編進 SQLite)
+    # 4. 意見回饋箱表
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS feedbacks (
             feedback_id TEXT PRIMARY KEY,
@@ -55,9 +59,19 @@ def init_db():
             FOREIGN KEY (discord_id) REFERENCES users (discord_id)
         )
     """)
+
+    # 5. 簽到系統表（確保 checkin.py 完美運行）
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS checkin_system (
+            discord_id INTEGER PRIMARY KEY,
+            name TEXT,
+            last_date TEXT,
+            streak INTEGER DEFAULT 0
+        )
+    """)
     
     conn.commit()
     conn.close()
 
-# 程式載入時自動建立表格
+# 程式載入時自動建立所有資料表
 init_db()
