@@ -1,39 +1,60 @@
 # ==================================================
 # 檔案名稱：utils/economy_helper.py
-# 檔案用途：公用經濟核心管理庫（統一處理各模組的 SU 幣增減與防負數安全機制）
+# 檔案用途：公用經濟核心管理庫（已完美對應 SQLite 資料庫與雲端備份）
 # ==================================================
 
-from utils.database import load_data, save_data
+import sqlite3
+
+DB_FILE = "guild_database.db"
 
 def update_user_coins(user_id: str, user_name: str, amount: int):
     """
-    共用金幣調整函式（含防負數底線保護）
-    :param user_id: 成員 Discord ID (字串)
+    共用金幣調整函式（直接操作 SQLite 資料庫，含防負數底線保護）
+    :param user_id: 成員 Discord ID (字串或整數)
     :param user_name: 成員名稱
     :param amount: 調整數量（正數為增加，負數為扣除）
     :return: dict (包含更新後的最新餘額與是否成功)
     """
-    data = load_data()
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
     
-    if "economy_system" not in data:
-        data["economy_system"] = {}
+    uid = int(user_id)
 
-    economy = data["economy_system"]
-    if user_id not in economy:
-        economy[user_id] = {"coins": 0, "name": user_name}
+    # 1. 查詢或初始化該成員在 member_levels 的資料
+    cursor.execute("""
+        SELECT su_coins, level, exp, messages_count, voice_hours 
+        FROM member_levels WHERE discord_id = ?
+    """, (uid,))
+    row = cursor.fetchone()
 
-    economy[user_id]["name"] = user_name
+    if not row:
+        current_coins = 0
+        cursor.execute("""
+            INSERT OR IGNORE INTO member_levels (discord_id, level, su_coins, messages_count, voice_hours, exp)
+            VALUES (?, 1, 0, 0, 0.0, 0)
+        """, (uid,))
+    else:
+        current_coins = row[0]
+
+    # 2. 計算調整後的餘額（透過 max(0, ...) 確保餘額絕對不會小於 0）
+    new_balance = max(0, current_coins + amount)
     
-    # 嚴格防呆：透過 max(0, ...) 確保餘額絕對不會被扣到負數
-    new_balance = max(0, economy[user_id]["coins"] + amount)
-    
-    # 如果是扣錢但發現餘額不足（被 max 擋下來），可以回傳失敗讓商城阻擋交易
+    # 3. 檢查扣款是否合法（若扣款後會小於 0 則判定交易失敗）
     success = True
-    if amount < 0 and (economy[user_id]["coins"] + amount) < 0:
+    if amount < 0 and (current_coins + amount) < 0:
         success = False
+        new_balance = current_coins  # 扣款失敗時維持原餘額不變
 
-    economy[user_id]["coins"] = new_balance
-    save_data(data)
+    # 4. 如果判定成功，將最新餘額寫回 SQLite 資料庫
+    if success:
+        cursor.execute("""
+            UPDATE member_levels 
+            SET su_coins = ? 
+            WHERE discord_id = ?
+        """, (new_balance, uid))
+        conn.commit()
+
+    conn.close()
 
     return {
         "success": success,
