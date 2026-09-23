@@ -1,36 +1,59 @@
 # ==================================================
 # 檔案名稱：utils/level_helper.py
-# 檔案用途：公用經驗值核心管理庫（含 XP 增加、升級判定與 Lv.50 滿等封頂機制）
+# 檔案用途：公用經驗值核心管理庫（已完美對應 SQLite 資料庫與雲端備份）
 # ==================================================
 
-from utils.database import load_data, save_data
+import sqlite3
+
+DB_FILE = "guild_database.db"
 
 def add_user_xp(user_id: str, user_name: str, xp_amount: int):
     """
-    共用加經驗值函式（含滿等封頂保護）
-    :param user_id: 成員 Discord ID (字串)
+    共用加經驗值函式（直接操作 SQLite 資料庫，支援滿等封頂與防呆機制）
+    :param user_id: 成員 Discord ID (字串或整數)
     :param user_name: 成員名稱
     :param xp_amount: 要增加的經驗值數量
     :return: dict (包含是否升級、新等級、新經驗值等狀態)
     """
-    data = load_data()
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
     
-    if "leveling_system" not in data:
-        data["leveling_system"] = {}
-
-    users = data["leveling_system"]
-    if user_id not in users:
-        users[user_id] = {"name": user_name, "xp": 0, "level": 1}
-
-    current_level = users[user_id]["level"]
-    
-    # 🛡️ 已經達到滿等 (Lv. 50) 的成員，直接鎖定不再增加經驗值與等級
+    uid = int(user_id)
     MAX_LEVEL = 50
+
+    # 1. 查詢或初始化該成員在 member_levels 的資料
+    cursor.execute("""
+        SELECT level, exp, messages_count, voice_hours, su_coins 
+        FROM member_levels WHERE discord_id = ?
+    """, (uid,))
+    row = cursor.fetchone()
+
+    if not row:
+        # 如果資料庫還沒有這個人，先初始化一筆預設值
+        current_level = 1
+        current_xp = 0
+        messages_count = 0
+        voice_hours = 0.0
+        su_coins = 0
+        cursor.execute("""
+            INSERT OR IGNORE INTO member_levels (discord_id, level, su_coins, messages_count, voice_hours, exp)
+            VALUES (?, 1, 0, 0, 0.0, 0)
+        """, (uid,))
+    else:
+        current_level, current_xp, messages_count, voice_hours, su_coins = row
+
+    # 2. 自動增加文字發言數（每次觸發加 XP 通常代表發了一則訊息）
+    messages_count += 1
+
+    # 3. 🛡️ 已經達到滿等 (Lv. 50) 的成員保護機制
     if current_level >= MAX_LEVEL:
-        users[user_id]["name"] = user_name
-        users[user_id]["level"] = MAX_LEVEL
-        users[user_id]["xp"] = 0  # 滿等後經驗值歸零或固定
-        save_data(data)
+        cursor.execute("""
+            UPDATE member_levels 
+            SET level = ?, exp = 0, messages_count = ? 
+            WHERE discord_id = ?
+        """, (MAX_LEVEL, messages_count, uid))
+        conn.commit()
+        conn.close()
         return {
             "leveled_up": False,
             "old_level": MAX_LEVEL,
@@ -40,34 +63,35 @@ def add_user_xp(user_id: str, user_name: str, xp_amount: int):
             "is_max_level": True
         }
 
-    # 更新名稱與增加經驗值
-    users[user_id]["name"] = user_name
-    users[user_id]["xp"] += xp_amount
-
-    current_xp = users[user_id]["xp"]
+    # 4. 正常累積經驗值與升級判定
+    current_xp += xp_amount
     xp_needed = current_level * 100
 
     leveled_up = False
     old_level = current_level
 
-    # 檢查是否升級（支援一次獲得大量 XP 直接連跳多級的防呆迴圈）
+    # 支援一次獲得大量 XP 直接連跳多級的防呆迴圈
     while current_xp >= xp_needed and current_level < MAX_LEVEL:
         current_level += 1
         current_xp -= xp_needed
         leveled_up = True
         
-        # 如果升級後剛好達到 50 等，直接封頂並終止迴圈
         if current_level >= MAX_LEVEL:
             current_level = MAX_LEVEL
             current_xp = 0  # 封頂後多餘經驗值清空
             break
             
-        xp_needed = current_level * 100  # 更新下一級所需門檻
+        xp_needed = current_level * 100
 
-    # 回寫資料庫
-    users[user_id]["level"] = current_level
-    users[user_id]["xp"] = current_xp
-    save_data(data)
+    # 5. 將最新數據寫回 SQLite 資料庫
+    cursor.execute("""
+        UPDATE member_levels 
+        SET level = ?, exp = ?, messages_count = ? 
+        WHERE discord_id = ?
+    """, (current_level, current_xp, messages_count, uid))
+    
+    conn.commit()
+    conn.close()
 
     return {
         "leveled_up": leveled_up,
