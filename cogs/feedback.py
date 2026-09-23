@@ -35,7 +35,7 @@ init_feedback_table()
 
 # 【請設定】相關頻道與身分組 ID
 ADMIN_FEEDBACK_CHANNEL_ID = 1548345803397926963  # 意見箱審核專區頻道 ID
-DISCUSSION_CHANNEL_ID = 1552168579799978006      # 意見採納後的討論頻道 ID
+DISCUSSION_CHANNEL_ID = 1552168579799978006      # 意見採納後的討論頻道 ID (請確保這裡填的是論壇頻道的 ID)
 ADMIN_ROLE_ID = 1547441967414124615             # 要被 @ 叫出來討論的幹部身分組 ID
 
 class FeedbackModal(discord.ui.Modal, title="📬 填寫公會意見回饋"):
@@ -131,7 +131,7 @@ class FeedbackReviewView(discord.ui.View):
 
         # 更新審核區 Embed 樣式
         embed.color = discord.Color.green()
-        embed.title = "🟢 【意見已採納（已轉發至討論區）】"
+        embed.title = "🟢 【意見已採納（已轉發至論壇討論區）】"
         embed.add_field(name="處理幹部", value=interaction.user.mention, inline=False)
 
         for item in self.children:
@@ -141,8 +141,10 @@ class FeedbackReviewView(discord.ui.View):
 
         guild = interaction.guild
 
-        # 5. 自動推送到討論頻道並 @幹部
+        # 5. 自動在「論壇頻道」建立新貼文並 @幹部
         discussion_channel = guild.get_channel(DISCUSSION_CHANNEL_ID)
+        print(f"🔍 尋找討論頻道結果: {discussion_channel} (類型: {type(discussion_channel)})")
+        
         if discussion_channel:
             admin_role = guild.get_role(ADMIN_ROLE_ID)
             role_mention = admin_role.mention if admin_role else "@幹部群"
@@ -158,12 +160,28 @@ class FeedbackReviewView(discord.ui.View):
                     discussion_embed.add_field(name=field.name, value=field.value, inline=field.inline)
                 discussion_embed.set_footer(text=embed.footer.text)
 
-                await discussion_channel.send(
-                    content=f"🔔 {role_mention} 有新的採納意見已轉發至此，請在此進行後續討論與追蹤：", 
-                    embed=discussion_embed
-                )
+                # 判斷如果該頻道是「論壇頻道 (ForumChannel)」，使用 create_thread 建立貼文
+                if isinstance(discussion_channel, discord.ForumChannel):
+                    # 貼文標題取意見的前 20 個字作為摘要
+                    thread_title = f"【意見討論】{embed.description[:20]}..."
+                    
+                    await discussion_channel.create_thread(
+                        name=thread_title,
+                        content=f"🔔 {role_mention} 有新的採納意見已建立為討論貼文，請在此進行後續討論：",
+                        embed=discussion_embed
+                    )
+                    print("✅ 成功在論壇頻道建立新貼文！")
+                else:
+                    # 如果不小心填成一般文字頻道，則用原本的 send
+                    await discussion_channel.send(
+                        content=f"🔔 {role_mention} 有新的採納意見已轉發至此，請在此進行後續討論與追蹤：", 
+                        embed=discussion_embed
+                    )
+                    print("✅ 成功發送至一般文字頻道！")
             except Exception as e:
-                print(f"❌ 轉發至討論頻道失敗: {e}")
+                print(f"❌ 建立論壇貼文失敗，錯誤原因: {e}")
+        else:
+            print(f"❌ 找不到對應的討論頻道，請確認 ID 是否正確！")
 
         # 6. 私訊通知原作者
         target_member = guild.get_member(author_id)
@@ -174,9 +192,9 @@ class FeedbackReviewView(discord.ui.View):
                 await target_member.send(notify_text)
             except Exception:
                 pass
-            await interaction.followup.send(f"✅ 已更新狀態（已同步寫入 SQLite），已轉發至討論頻道並私訊通知 {target_member.mention}。", ephemeral=True)
+            await interaction.followup.send(f"✅ 已更新狀態（已同步寫入 SQLite），已在論壇建立討論貼文並私訊通知 {target_member.mention}。", ephemeral=True)
         else:
-            await interaction.followup.send(f"✅ 已更新狀態（已同步寫入 SQLite），並已轉發至討論頻道。", ephemeral=True)
+            await interaction.followup.send(f"✅ 已更新狀態（已同步寫入 SQLite），並已在論壇建立討論貼文。", ephemeral=True)
 
     @discord.ui.button(label="🔴 綜合評估不合適", style=discord.ButtonStyle.danger, custom_id="feedback_reject_btn_v4")
     async def reject_feedback(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -249,7 +267,7 @@ class FeedbackCog(commands.Cog):
 
     @app_commands.command(name="架設意見箱", description="【管理員】在當前頻道發送常駐的意見箱填寫面板")
     @app_commands.checks.has_permissions(administrator=True)
-    async def setup_feedback_panel(self, interaction: discord.Interaction):
+    async def setup_feedback_panel(self, interaction: discord.InputInteraction if hasattr(discord, 'InputInteraction') else discord.Interaction):
         embed = discord.Embed(
             title="📬 靈谷公會 - 意見回饋箱",
             description="對公會有任何想法、建議或想反映的事項嗎？\n"
