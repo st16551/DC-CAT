@@ -1,6 +1,6 @@
 # ==================================================
 # 檔案名稱：cogs/database_backup.py
-# 檔案用途：雲端資料庫自動備份與開機還原系統
+# 檔案用途：雲端資料庫自動備份與開機還原系統（強效除錯版）
 # ==================================================
 
 import os
@@ -10,8 +10,7 @@ from discord.ext import commands, tasks
 class DatabaseBackup(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        # 已對應你的「#備份」頻道 ID
-        self.backup_channel_id = 1552166997746262057  
+        self.backup_channel_id = 1552166997746262057  # 你的 #備份 頻道 ID
         self.db_path = "guild_database.db"
         
         # 啟動時先執行還原，並開啟定時備份迴圈
@@ -21,32 +20,35 @@ class DatabaseBackup(commands.Cog):
     def cog_unload(self):
         self.auto_backup_loop.cancel()
 
-    # 1. 【還原機制】機器人開機時，去備份頻道抓最新的 db 檔
+    # 1. 【還原機制】加強版：強制尋找並還原備份
     async def restore_database_from_discord(self):
         await self.bot.wait_until_ready()
         channel = self.bot.get_channel(self.backup_channel_id)
         
         if not channel:
-            print(f"[備份系統] ❌ 找不到指定的備份頻道 ID: {self.backup_channel_id}")
+            print(f"[備份系統] ❌ 找不到指定的備份頻道 ID: {self.backup_channel_id}，請確認機器人是否有權限看到該頻道！")
             return
 
-        print("[備份系統] 🔍 正在檢查 Discord 上的最新資料庫備份...")
+        print("[備份系統] 🔍 正在強力檢查 Discord 上的最新資料庫備份...")
         try:
-            # 抓取頻道中的最後幾則訊息
-            async for message in channel.history(limit=10):
+            found_backup = False
+            async for message in channel.history(limit=20):
                 if message.attachments:
-                    attachment = message.attachments[0]
-                    # 確認附件是我們的資料庫檔案
-                    if attachment.filename == "guild_database.db":
-                        await attachment.save(self.db_path)
-                        print("[備份系統] ✅ 成功從 Discord 還原最新資料庫！")
-                        return
+                    for attachment in message.attachments:
+                        print(f"[備份系統] 發現附件: {attachment.filename}")
+                        # 只要副檔名是 .db 或者是我們的資料庫名稱就直接抓下來
+                        if attachment.filename.endswith(".db"):
+                            await attachment.save(self.db_path)
+                            print(f"[備份系統] ✅ 成功從 Discord 還原資料庫檔案: {attachment.filename}！")
+                            found_backup = True
+                            return
             
-            print("[備份系統] ⚠️ 備份頻道中找不到現有的資料庫檔案，將使用本地預設（或全新）資料庫。")
+            if not found_backup:
+                print("[備份系統] ⚠️ 備份頻道最近 20 則訊息內找不到任何 .db 檔案，將使用本地預設資料庫。")
         except Exception as e:
-            print(f"[備份系統] ❌ 還原資料庫時發生錯誤: {e}")
+            print(f"[備份系統] ❌ 還原資料庫時發生嚴重錯誤: {e}")
 
-    # 2. 【備份機制】每 3 小時自動上傳一次資料庫至 Discord
+    # 2. 【備份機制】每 3 小時自動備份一次
     @tasks.loop(hours=3)
     async def auto_backup_loop(self):
         await self.bot.wait_until_ready()
@@ -56,7 +58,6 @@ class DatabaseBackup(commands.Cog):
 
         channel = self.bot.get_channel(self.backup_channel_id)
         if not channel:
-            print(f"[備份系統] ❌ 找不到備份頻道，無法執行自動備份。")
             return
 
         print("[備份系統] 📦 正在將資料庫備份至 Discord...")
