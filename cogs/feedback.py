@@ -129,9 +129,9 @@ class FeedbackReviewView(discord.ui.View):
         conn.commit()
         conn.close()
 
-        # 更新 Embed 樣式
+        # 更新審核區 Embed 樣式
         embed.color = discord.Color.green()
-        embed.title = "🟢 【意見已採納（須討論）】"
+        embed.title = "🟢 【意見已採納（已轉發至討論區）】"
         embed.add_field(name="處理幹部", value=interaction.user.mention, inline=False)
 
         for item in self.children:
@@ -141,7 +141,7 @@ class FeedbackReviewView(discord.ui.View):
 
         guild = interaction.guild
 
-        # 5. 自動推送到討論/交辦頻道並 @幹部
+        # 5. 自動推送到討論頻道並 @幹部
         discussion_channel = guild.get_channel(DISCUSSION_CHANNEL_ID)
         if discussion_channel:
             admin_role = guild.get_role(ADMIN_ROLE_ID)
@@ -159,7 +159,7 @@ class FeedbackReviewView(discord.ui.View):
                 discussion_embed.set_footer(text=embed.footer.text)
 
                 await discussion_channel.send(
-                    content=f"🔔 {role_mention} 有新的採納意見需要進行後續討論與追蹤：", 
+                    content=f"🔔 {role_mention} 有新的採納意見已轉發至此，請在此進行後續討論與追蹤：", 
                     embed=discussion_embed
                 )
             except Exception as e:
