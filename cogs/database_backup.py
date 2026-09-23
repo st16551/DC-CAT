@@ -7,7 +7,7 @@ class DatabaseBackup(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         # 請把這裡換成你剛剛建立的「私密備份頻道 ID」
-        self.backup_channel_id = 123456789012345678  
+        self.backup_channel_id = 1552166997746262057  
         self.db_path = "guild_database.db"
         
         # 啟動時先執行還原，並開啟定時備份迴圈
