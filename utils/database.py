@@ -4,8 +4,11 @@
 # ==================================================
 
 import sqlite3
+import json
+import os
 
 DB_FILE = "guild_database.db"
+JSON_DB_PATH = "guild_data.json"
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
@@ -75,3 +78,19 @@ def init_db():
 
 # 程式載入時自動建立所有資料表
 init_db()
+
+# ==================================================
+# 兼容舊版 leveling.py 的 JSON 讀寫介面
+# ==================================================
+def load_data():
+    if not os.path.exists(JSON_DB_PATH):
+        return {}
+    try:
+        with open(JSON_DB_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except json.JSONDecodeError:
+        return {}
+
+def save_data(data):
+    with open(JSON_DB_PATH, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
