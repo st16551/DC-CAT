@@ -36,7 +36,7 @@ init_feedback_table()
 # 【請設定】相關頻道與身分組 ID
 ADMIN_FEEDBACK_CHANNEL_ID = 1548345803397926963  # 意見箱審核專區頻道 ID
 DISCUSSION_CHANNEL_ID = 1552168579799978006      # 意見採納後的討論頻道 ID
-ADMIN_ROLE_ID = 1552168579799978006             # 要被 @ 叫出來討論的幹部身分組 ID
+ADMIN_ROLE_ID = 1547441967414124615             # 要被 @ 叫出來討論的幹部身分組 ID
 
 class FeedbackModal(discord.ui.Modal, title="📬 填寫公會意見回饋"):
     feedback_input = discord.ui.TextInput(
