@@ -1,13 +1,13 @@
 # ==================================================
 # 檔案名稱：economy.py
-# 檔案用途：公會純資產/錢包指令模組（透過 utils/economy_helper 執行底層財務操作）
+# 檔案用途：公會純資產/錢包指令模組（透過 SQLite 與 economy_helper 執行底層財務操作）
 # ==================================================
 
 import discord
 from discord import app_commands
 from discord.ext import commands
-from utils.database import load_data, save_data
-from utils.economy_helper import update_user_coins  # 引入我們剛才建立的共用經濟核心
+from utils.database import get_db_connection  # 🛡️ 引入統一的絕對路徑連線工具
+from utils.economy_helper import update_user_coins  # 引入共用經濟核心
 
 class EconomyCog(commands.Cog):
     def __init__(self, bot):
@@ -39,13 +39,14 @@ class EconomyCog(commands.Cog):
     )
     @app_commands.checks.has_permissions(administrator=True)
     async def reset_economy(self, interaction: discord.Interaction):
-        data = load_data()
-        if "economy_system" in data:
-            data["economy_system"] = {}
-            save_data(data)
-            await interaction.response.send_message("🗑️ **【系統重製完成】** 所有成員的 SU 幣資產已全數歸零！", ephemeral=True)
-        else:
-            await interaction.response.send_message("ℹ️ 目前沒有找到任何經濟資料。", ephemeral=True)
+        # 🛡️ 改為直接對 SQLite 資料庫進行歸零，確保與資料庫同步
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("UPDATE member_levels SET su_coins = 0")
+        conn.commit()
+        conn.close()
+
+        await interaction.response.send_message("🗑️ **【系統重製完成】** 所有成員的 SU 幣資產已全數歸零！", ephemeral=True)
 
 async def setup(bot):
     await bot.add_cog(EconomyCog(bot))
