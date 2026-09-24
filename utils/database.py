@@ -63,13 +63,26 @@ def init_db():
         )
     """)
 
-    # 5. 簽到系統表（確保 checkin.py 完美運行）
+    # 5. 簽到系統表
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS checkin_system (
             discord_id INTEGER PRIMARY KEY,
             name TEXT,
             last_date TEXT,
             streak INTEGER DEFAULT 0
+        )
+    """)
+
+    # 6. 【全面對齊面板】會員成長數據與資產表
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS member_levels (
+            discord_id INTEGER PRIMARY KEY,
+            level INTEGER DEFAULT 1,
+            su_coins INTEGER DEFAULT 0,
+            messages_count INTEGER DEFAULT 0,
+            voice_hours REAL DEFAULT 0.0,
+            exp INTEGER DEFAULT 0,
+            max_exp INTEGER DEFAULT 100
         )
     """)
     
