@@ -73,7 +73,7 @@ def init_db():
         )
     """)
 
-    # 6. 【全面對齊面板】會員成長數據與資產表
+    # 6. 會員成長數據與資產表（確保舊資料欄位完整）
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS member_levels (
             discord_id INTEGER PRIMARY KEY,
@@ -89,12 +89,8 @@ def init_db():
     conn.commit()
     conn.close()
 
-# 程式載入時自動建立所有資料表
-init_db()
+# ❌ 刪除原本底部的自動執行：init_db()
 
-# ==================================================
-# 兼容舊版 leveling.py 的 JSON 讀寫介面
-# ==================================================
 def load_data():
     if not os.path.exists(JSON_DB_PATH):
         return {}
