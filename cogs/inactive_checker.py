@@ -27,7 +27,7 @@ class InactiveCheckerCog(commands.Cog):
 
     @app_commands.command(
         name="檢查未活躍",
-        description="【管理員】精準檢測超過指定天數無互動的成員，同步至試算表"
+        description="【管理員】精準檢測超過指定天數無互動的成員（自動排除請假中成員），同步至試算表"
     )
     @app_commands.describe(
         days="超過多少天未互動才視為未活躍（預設 14 天）",
@@ -43,17 +43,50 @@ class InactiveCheckerCog(commands.Cog):
         now = datetime.now()
         threshold_date = now - timedelta(days=days)
 
-        inactive_list = []
-        sheet_rows = [["Discord ID", "使用者名稱", "顯示名稱", "累計訊息", "累計語音(時)", "最後活躍時間", "判定原因"]]
-
         conn = get_db_connection()
         cursor = conn.cursor()
+
+        # 🌟 1. 撈取所有「已批准」的請假紀錄，用來做豁免比對
+        cursor.execute("""
+            SELECT discord_id, start_date, end_date 
+            FROM leaves 
+            WHERE status LIKE '%批准%'
+        """)
+        leave_records = cursor.fetchall()
+
+        # 處理請假名單轉換（檢查今天是否剛好在請假區間內）
+        on_leave_discord_ids = set()
+        for row_leave in leave_records:
+            # 支援字典或 tuple 形式的資料庫回傳
+            discord_id = row_leave["discord_id"] if isinstance(row_leave, sqlite3.Row) else row_leave[0]
+            start_str = row_leave["start_date"] if isinstance(row_leave, sqlite3.Row) else row_leave[1]
+            end_str = row_leave["end_date"] if isinstance(row_leave, sqlite3.Row) else row_leave[2]
+            try:
+                s_m, s_d = map(int, start_str.replace("月", "/").replace("日", "").split("/"))
+                e_m, e_d = map(int, end_str.replace("月", "/").replace("日", "").split("/"))
+                
+                start_dt = datetime(now.year, s_m, s_d)
+                end_dt = datetime(now.year, e_m, e_d, 23, 59, 59)
+
+                if start_dt <= now <= end_dt:
+                    on_leave_discord_ids.add(discord_id)
+            except Exception:
+                pass
+
+        inactive_list = []
+        sheet_rows = [["Discord ID", "使用者名稱", "顯示名稱", "累計訊息", "累計語音(時)", "最後活躍時間", "判定原因"]]
+        excused_count = 0
 
         for member in guild.members:
             if member.bot:
                 continue
 
-            # 查詢使用者的活躍與最後活動時間（對應你的 users 與 member_levels 表）
+            # 🌟 2. 如果該成員目前在請假保護名單中，直接跳過不視為未活躍！
+            if member.id in on_leave_discord_ids:
+                excused_count += 1
+                continue
+
+            # 查詢使用者的活躍與最後活動時間
             cursor.execute("""
                 SELECT u.last_active, m.messages_count, m.voice_hours 
                 FROM users u 
@@ -81,8 +114,6 @@ class InactiveCheckerCog(commands.Cog):
                         pass
 
             # 精準判定邏輯：
-            # 1. 如果資料庫根本沒有記錄，且加入時間超過指定天數 -> 判定未活躍
-            # 2. 如果有記錄，但最後活躍時間小於門檻日期 -> 判定未活躍
             if not last_active_time:
                 if member.joined_at and member.joined_at.replace(tzinfo=None) < threshold_date:
                     is_inactive = True
@@ -128,7 +159,7 @@ class InactiveCheckerCog(commands.Cog):
 
         # 📁 產生成員名單 TXT 檔案
         file_content = (
-            f"=== 超過 {days} 天無互動之精準未活躍成員清單 (共 {len(inactive_list)} 人) ===\n"
+            f"=== 超過 {days} 天無互動之精準未活躍成員清單 (共 {len(inactive_list)} 人，已自動排除 {excused_count} 位請假中成員) ===\n"
             f"檢測時間：{now.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
             + "\n".join(inactive_list)
         )
@@ -138,7 +169,7 @@ class InactiveCheckerCog(commands.Cog):
         )
 
         await interaction.followup.send(
-            f"🎯 精準檢測完畢！符合未活躍條件的成員共 **{len(inactive_list)}** 人。{sync_status_msg}",
+            f"🎯 精準檢測完畢！符合未活躍條件的成員共 **{len(inactive_list)}** 人 *(另已自動豁免 {excused_count} 位請假中成員)*。{sync_status_msg}",
             file=file,
             ephemeral=True,
         )
