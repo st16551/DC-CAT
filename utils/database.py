@@ -93,7 +93,17 @@ def init_db():
             max_exp INTEGER DEFAULT 100
         )
     """)
-    
+    # 7. 黑市活躍詛咒與狀態表（支援機器人重啟不遺失）
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS active_debuffs (
+            id TEXT PRIMARY KEY,
+            guild_id INTEGER,
+            user_id INTEGER,
+            type TEXT,
+            old_nickname TEXT,
+            expire_at TEXT
+        )
+    """)
     conn.commit()
     conn.close()
 
