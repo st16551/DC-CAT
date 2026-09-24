@@ -1,3 +1,8 @@
+# ==================================================
+# 檔案名稱：cogs/market.py
+# 檔案用途：市集買賣與私密討論房系統
+# ==================================================
+
 import asyncio
 import discord
 from discord import app_commands
@@ -160,7 +165,7 @@ class MarketCog(commands.Cog):
         物品名稱="請輸入要賣的物品或卡片名稱",
         數量="請輸入數量 (例如: 1張)",
         備註="選填：想補充的說明、價格或面交地點等",
-        圖片="選填：上傳物品或卡片的照片/截圖",
+        圖片="選填：點擊此欄位或直接貼上/上傳圖片",
     )
     async def sell_item(
         self,
@@ -168,7 +173,7 @@ class MarketCog(commands.Cog):
         物品名稱: str,
         數量: str,
         備註: str = None,
-        圖片: discord.Attachment = None,  # 👈 新增圖片參數
+        圖片: discord.Attachment = None,
     ):
         embed = discord.Embed(title="出售刊登", color=discord.Color.blue())
         embed.add_field(name="物品名稱", value=物品名稱, inline=True)
@@ -177,7 +182,6 @@ class MarketCog(commands.Cog):
             embed.add_field(name="備註", value=備註, inline=False)
         embed.add_field(name="賣家", value=interaction.user.mention, inline=False)
 
-        # 如果使用者有上傳圖片，設定到 Embed 中
         if 圖片:
             embed.set_image(url=圖片.url)
 
@@ -197,7 +201,7 @@ class MarketCog(commands.Cog):
         物品名稱="請輸入想要收購的物品或卡片名稱",
         數量="請輸入徵求數量 (例如: 1張)",
         備註="選填：想補充的說明、預算或收購條件等",
-        圖片="選填：上傳參考圖片或想要的卡片範例",
+        圖片="選填：點擊此欄位或直接貼上/上傳圖片",
     )
     async def buy_item(
         self,
@@ -205,7 +209,7 @@ class MarketCog(commands.Cog):
         物品名稱: str,
         數量: str,
         備註: str = None,
-        圖片: discord.Attachment = None,  # 👈 新增圖片參數
+        圖片: discord.Attachment = None,
     ):
         embed = discord.Embed(title="徵求刊登", color=discord.Color.green())
         embed.add_field(name="物品名稱", value=物品名稱, inline=True)
@@ -214,7 +218,6 @@ class MarketCog(commands.Cog):
             embed.add_field(name="備註", value=備註, inline=False)
         embed.add_field(name="買家", value=interaction.user.mention, inline=False)
 
-        # 如果使用者有上傳圖片，設定到 Embed 中
         if 圖片:
             embed.set_image(url=圖片.url)
 
