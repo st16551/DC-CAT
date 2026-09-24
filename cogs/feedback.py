@@ -1,20 +1,17 @@
 # ==================================================
 # 檔案名稱：cogs/feedback.py
-# 檔案用途：公會意見回饋箱與幹部審核討論系統（結合 SQLite 資料庫）
+# 檔案用途：公會意見回饋箱與幹部審核討論系統（結合 SQLite 絕對路徑防護版）
 # ==================================================
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 from datetime import datetime
-import sqlite3
-
-# 資料庫檔案名稱
-DB_FILE = "guild_database.db"
+from utils.database import get_db_connection  # 🛡️ 引入統一的絕對路徑連線工具
 
 def init_feedback_table():
     """確保資料庫中存在意見箱表格"""
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS feedbacks (
@@ -36,7 +33,7 @@ init_feedback_table()
 # 【請設定】相關頻道與身分組 ID
 ADMIN_FEEDBACK_CHANNEL_ID = 1548345803397926963  # 意見箱審核專區頻道 ID
 DISCUSSION_CHANNEL_ID = 1552168579799978006      # 意見採納後的討論頻道 ID (請確保這裡填的是論壇頻道的 ID)
-ADMIN_ROLE_ID = 1547441967414124615             # 要被 @ 叫出來討論的幹部身分組 ID
+ADMIN_ROLE_ID = 1547441967414124615               # 要被 @ 叫出來討論的幹部身分組 ID
 
 class FeedbackModal(discord.ui.Modal, title="📬 填寫公會意見回饋"):
     feedback_input = discord.ui.TextInput(
@@ -56,7 +53,7 @@ class FeedbackModal(discord.ui.Modal, title="📬 填寫公會意見回饋"):
         feedback_id = f"fb_{int(datetime.now().timestamp())}"
 
         # 1. 寫入 SQLite 資料庫
-        conn = sqlite3.connect(DB_FILE)
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO feedbacks (feedback_id, author_id, author_name, content, status, created_at)
@@ -119,7 +116,7 @@ class FeedbackReviewView(discord.ui.View):
             return
 
         # 更新 SQLite 資料庫中的狀態
-        conn = sqlite3.connect(DB_FILE)
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("""
             UPDATE feedbacks 
@@ -185,7 +182,7 @@ class FeedbackReviewView(discord.ui.View):
 
         # 6. 私訊通知原作者
         target_member = guild.get_member(author_id)
-        notify_text = f"🟢 **你在公會意見箱提出的建議已被幹部【採納（須討論）】，感謝你對公會的貢獻！**"
+        notify_text = f"🟢 **你在公會意見箱提出的建議已被幹部【採納（須討論）】, 感謝你對公會的貢獻！**"
         
         if target_member:
             try:
@@ -214,7 +211,7 @@ class FeedbackReviewView(discord.ui.View):
             return
 
         # 更新 SQLite 資料庫中的狀態
-        conn = sqlite3.connect(DB_FILE)
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("""
             UPDATE feedbacks 
