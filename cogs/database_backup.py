@@ -1,6 +1,6 @@
 # ==================================================
 # 檔案名稱：cogs/database_backup.py
-# 檔案用途：Discord 頻道雲端備份與還原系統（含手動讀取、儲存、重置指令）
+# 檔案用途：Discord 頻道雲端備份與還原系統（重啟時不自動傳送新備份檔案）
 # ==================================================
 
 import os
@@ -17,10 +17,8 @@ class DatabaseBackup(commands.Cog):
         self.backup_channel_id = 1552166997746262057
         self.db_path = "guild_database.db"
         
-        # 🚀 啟動時自動同步還原雲端備份
-        self.sync_restore_database()
-        
-        # 啟動定時自動備份
+        # 🚀 啟動時不執行任何雲端存檔或覆蓋動作，保持本地乾淨
+        # 如果需要定時備份，可以保留 loop，但它只會在時間到時計時執行，不會在「重開機」時立刻洗版
         self.auto_backup_loop.start()
 
     def cog_unload(self):
@@ -31,7 +29,8 @@ class DatabaseBackup(commands.Cog):
         return datetime.datetime.now(tw_timezone)
 
     def sync_restore_database(self):
-        print("[備份系統] 🔍 【同步還原】正在尋找雲端備份檔...")
+        """手動讀取時會用到的還原核心邏輯"""
+        print("[備份系統] 🔍 【手動還原】正在尋找雲端備份檔...")
         try:
             token = self.bot.http.token
             url = f"https://discord.com/api/v10/channels/{self.backup_channel_id}/messages?limit=50"
@@ -74,7 +73,7 @@ class DatabaseBackup(commands.Cog):
                     else:
                         print(f"[備份系統] ❌ 下載備份檔案失敗")
             else:
-                print(f"[備份系統] ⚠️ 雲端找不到有效備份，使用本地預設狀態。")
+                print(f"[備份系統] ⚠️ 雲端找不到有效備份。")
 
         except Exception as e:
             print(f"[備份系統] ❌ 還原過程發生例外錯誤: {e}")
@@ -104,6 +103,8 @@ class DatabaseBackup(commands.Cog):
     @auto_backup_loop.before_loop
     async def before_auto_backup(self):
         await self.bot.wait_until_ready()
+        # 💡 讓計時器等待機器人完全啟動後才開始計時，避免在啟動瞬間觸發上傳
+        await asyncio.sleep(10) # 預留 10 秒緩衝，確保重啟不會立刻送出備份
 
     # ==================================================
     # 管理員專用：手動儲存資料指令
@@ -132,7 +133,7 @@ class DatabaseBackup(commands.Cog):
             await interaction.followup.send(f"❌ 備份上傳失敗: `{e}`", ephemeral=True)
 
     # ==================================================
-    # 管理員專用：手動讀取資料指令 (NEW!)
+    # 管理員專用：手動讀取資料指令
     # ==================================================
     @app_commands.command(name="讀取資料", description="【管理員專用】從雲端頻道手動下載並還原最新的資料庫備份")
     @app_commands.default_permissions(administrator=True)
@@ -140,7 +141,6 @@ class DatabaseBackup(commands.Cog):
     async def manual_load(self, interaction: discord.Interaction):
         await interaction.response.defer(thinking=True, ephemeral=True)
         try:
-            # 執行一次手動同步還原
             self.sync_restore_database()
             await interaction.followup.send("✅ **已成功從雲端頻道讀取並還原最新的資料庫！**", ephemeral=True)
         except Exception as e:
