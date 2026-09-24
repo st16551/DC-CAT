@@ -104,6 +104,18 @@ def init_db():
             expire_at TEXT
         )
     """)
+    # 8. 抽獎活動表（支援機器人重啟與持久化）
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS giveaways (
+            message_id INTEGER PRIMARY KEY,
+            channel_id INTEGER,
+            prize TEXT,
+            winners_count INTEGER,
+            end_timestamp REAL,
+            participants TEXT,
+            ended INTEGER DEFAULT 0
+        )
+    """)
     conn.commit()
     conn.close()
 
