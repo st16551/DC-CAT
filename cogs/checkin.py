@@ -4,18 +4,16 @@
 # ==================================================
 
 from datetime import datetime
-import sqlite3
 import discord
 from discord import app_commands
 from discord.ext import commands
 from utils.economy_helper import update_user_coins
 from utils.level_helper import add_user_xp
-
-DB_FILE = "guild_database.db"
+from utils.database import get_db_connection  # 🛡️ 引入統一的絕對路徑連線工具
 
 def init_checkin_table():
     """確保資料庫中存在簽到表格"""
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS checkin_system (
@@ -47,7 +45,7 @@ class PersistentCheckinView(discord.ui.View):
         user_name = interaction.user.display_name
         today_str = datetime.now().strftime("%Y-%m-%d")
 
-        conn = sqlite3.connect(DB_FILE)
+        conn = get_db_connection()
         cursor = conn.cursor()
 
         cursor.execute(
@@ -125,7 +123,7 @@ class CheckinCog(commands.Cog):
     )
     @app_commands.checks.has_permissions(administrator=True)
     async def reset_checkin(self, interaction: discord.Interaction):
-        conn = sqlite3.connect(DB_FILE)
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("DELETE FROM checkin_system")
         conn.commit()
