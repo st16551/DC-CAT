@@ -1,6 +1,6 @@
 # ==================================================
 # 檔案名稱：cogs/database_backup.py
-# 檔案用途：Discord 頻道雲端備份與還原系統（內建 urllib 同步還原版）
+# 檔案用途：Discord 頻道雲端備份與還原系統（指定抓取正確歷史版）
 # ==================================================
 
 import os
@@ -17,11 +17,11 @@ class DatabaseBackup(commands.Cog):
         self.backup_channel_id = 1552166997746262057
         self.db_path = "guild_database.db"
         
-        # 🚀 【內建同步還原】在模組載入瞬間直接透過標準庫 API 抓取雲端最大有效備份
+        # 🚀 執行指定還原（抓取最早或特定有效備份）
         self.sync_restore_database()
         
-        # 啟動定時自動備份
-        self.auto_backup_loop.start()
+        # 暫時註解自動備份，等你確認等級恢復正常後，再將下面的註解拿掉
+        # self.auto_backup_loop.start()
 
     def cog_unload(self):
         self.auto_backup_loop.cancel()
@@ -31,7 +31,7 @@ class DatabaseBackup(commands.Cog):
         return datetime.datetime.now(tw_timezone)
 
     def sync_restore_database(self):
-        print("[備份系統] 🔍 【內建同步還原】正在尋找雲端最大備份檔...")
+        print("[備份系統] 🔍 【精準還原】正在尋找正確的備份檔...")
         try:
             token = self.bot.http.token
             url = f"https://discord.com/api/v10/channels/{self.backup_channel_id}/messages?limit=50"
@@ -47,21 +47,30 @@ class DatabaseBackup(commands.Cog):
                     return
                 messages = json.loads(response.read().decode())
 
-            best_url = None
-            max_size = 0
+            target_url = None
+            
+            # 策略：我們反向尋找（從最舊到最新），或者尋找包含 [手動備份] 的那則訊息
+            for msg in reversed(messages):
+                content = msg.get("content", "")
+                if "手動備份" in content or "36.00 KB" in content or "2026-09-24 11:08:58" in content:
+                    if "attachments" in msg and msg["attachments"]:
+                        for att in msg["attachments"]:
+                            if att["filename"].endswith(".db"):
+                                target_url = att["url"]
+                                print(f"[備份系統] 🎯 成功鎖定 11:08 正確的手動備份檔！")
 
-            for msg in messages:
-                if "attachments" in msg:
-                    for att in msg["attachments"]:
-                        if att["filename"].endswith(".db"):
-                            if att["size"] > max_size:
-                                max_size = att["size"]
-                                best_url = att["url"]
+            # 如果沒找到標記，退回找大於 30KB 且不是最新那包的檔案
+            if not target_url:
+                for msg in messages:
+                    if "attachments" in msg:
+                        for att in msg["attachments"]:
+                            if att["filename"].endswith(".db") and 35000 < att["size"] < 37000:
+                                target_url = att["url"]
+                                break
 
-            if best_url and max_size > 20480: # 確保大於 20KB 才是有效檔案
-                print(f"[備份系統] 📥 找到雲端最佳備份檔！大小: {max_size} bytes，正在下載...")
-                
-                file_req = urllib.request.Request(best_url, headers={"User-Agent": "DiscordBot (Python)"})
+            if target_url:
+                print(f"[備份系統] 📥 正在下載正確的備份檔...")
+                file_req = urllib.request.Request(target_url, headers={"User-Agent": "DiscordBot (Python)"})
                 with urllib.request.urlopen(file_req) as file_res:
                     if file_res.status == 200:
                         temp_path = self.db_path + ".tmp"
@@ -71,16 +80,15 @@ class DatabaseBackup(commands.Cog):
                         if os.path.exists(self.db_path):
                             os.remove(self.db_path)
                         os.rename(temp_path, self.db_path)
-                        print(f"[備份系統] ✅ 【還原成功】雲端 36KB 舊資料已成功強制覆蓋本地！")
+                        print(f"[備份系統] ✅ 【還原成功】已成功強制找回你 36KB 的完整資料！")
                     else:
                         print(f"[備份系統] ❌ 下載備份檔案失敗")
             else:
-                print(f"[備份系統] ⚠️ 雲端找不到大於 20KB 的有效備份檔，將使用本地預設狀態。")
+                print(f"[備份系統] ⚠️ 找不到指定的備份檔。")
 
         except Exception as e:
-            print(f"[備份系統] ❌ 同步還原過程發生例外錯誤: {e}")
+            print(f"[備份系統] ❌ 還原過程發生例外錯誤: {e}")
 
-        # 最後初始化資料庫結構
         from utils.database import init_db
         init_db()
         print("[備份系統] 🛠️ 資料庫結構初始化完成。")
@@ -107,9 +115,6 @@ class DatabaseBackup(commands.Cog):
     async def before_auto_backup(self):
         await self.bot.wait_until_ready()
 
-    # ==================================================
-    # 管理員專用：手動儲存資料指令
-    # ==================================================
     @app_commands.command(name="儲存資料", description="【管理員專用】手動將目前的資料庫立刻備份上傳到雲端頻道")
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
@@ -133,12 +138,9 @@ class DatabaseBackup(commands.Cog):
         except Exception as e:
             await interaction.followup.send(f"❌ 備份上傳失敗: `{e}`", ephemeral=True)
 
-    # ==================================================
-    # 管理員專用：重製資料指令（帶按鈕防呆）
-    # ==================================================
     @app_commands.command(name="重製資料", description="【管理員專用】將資料庫表格清空重置（請小心使用！）")
     @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
+    @app_permissions.checks.has_permissions(administrator=True)
     async def manual_reset(self, interaction: discord.Interaction):
         class ResetConfirmView(discord.ui.View):
             def __init__(self):
