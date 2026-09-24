@@ -1,11 +1,12 @@
 # ==================================================
 # 檔案名稱：cogs/database_backup.py
-# 檔案用途：Discord 頻道雲端備份與還原系統（強制同步還原版）
+# 檔案用途：Discord 頻道雲端備份與還原系統（內建 urllib 同步還原版）
 # ==================================================
 
 import os
 import datetime
-import requests
+import urllib.request
+import json
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
@@ -16,7 +17,7 @@ class DatabaseBackup(commands.Cog):
         self.backup_channel_id = 1552166997746262057
         self.db_path = "guild_database.db"
         
-        # 🚀 【強制同步還原】在載入瞬間直接透過 HTTP API 抓取雲端最大有效備份，不囉嗦直接覆蓋本地
+        # 🚀 【內建同步還原】在模組載入瞬間直接透過標準庫 API 抓取雲端最大有效備份
         self.sync_restore_database()
         
         # 啟動定時自動備份
@@ -30,22 +31,22 @@ class DatabaseBackup(commands.Cog):
         return datetime.datetime.now(tw_timezone)
 
     def sync_restore_database(self):
-        print("[備份系統] 🔍 【強制同步還原】正在透過 Discord API 尋找雲端最大備份檔...")
+        print("[備份系統] 🔍 【內建同步還原】正在尋找雲端最大備份檔...")
         try:
-            headers = {"Authorization": f"Bot {self.bot.token}"} if hasattr(self.bot, "token") else {}
-            # 直接透過 Discord REST API 抓取頻道歷史訊息（不需要等待 bot ready）
+            token = self.bot.http.token
             url = f"https://discord.com/api/v10/channels/{self.backup_channel_id}/messages?limit=50"
             
-            # 如果 bot token 存在隱藏屬性，使用 discord 的 internal token
-            token = self.bot.http.token
-            headers = {"Authorization": f"Bot {token}"}
+            req = urllib.request.Request(
+                url, 
+                headers={"Authorization": f"Bot {token}", "User-Agent": "DiscordBot (Python)"}
+            )
             
-            response = requests.get(url, headers=headers)
-            if response.status_code != 200:
-                print(f"[備份系統] ❌ 無法取得頻道訊息，API 回傳代碼: {response.status_code}")
-                return
+            with urllib.request.urlopen(req) as response:
+                if response.status != 200:
+                    print(f"[備份系統] ❌ 無法取得頻道訊息，狀態碼: {response.status}")
+                    return
+                messages = json.loads(response.read().decode())
 
-            messages = response.json()
             best_url = None
             max_size = 0
 
@@ -59,18 +60,20 @@ class DatabaseBackup(commands.Cog):
 
             if best_url and max_size > 20480: # 確保大於 20KB 才是有效檔案
                 print(f"[備份系統] 📥 找到雲端最佳備份檔！大小: {max_size} bytes，正在下載...")
-                file_res = requests.get(best_url)
-                if file_res.status_code == 200:
-                    temp_path = self.db_path + ".tmp"
-                    with open(temp_path, "wb") as f:
-                        f.write(file_res.content)
-                    
-                    if os.path.exists(self.db_path):
-                        os.remove(self.db_path)
-                    os.rename(temp_path, self.db_path)
-                    print(f"[備份系統] ✅ 【還原成功】雲端 36KB 舊資料已成功強制覆蓋本地！")
-                else:
-                    print(f"[備份系統] ❌ 下載備份檔案失敗，HTTP 狀態碼: {file_res.status_code}")
+                
+                file_req = urllib.request.Request(best_url, headers={"User-Agent": "DiscordBot (Python)"})
+                with urllib.request.urlopen(file_req) as file_res:
+                    if file_res.status == 200:
+                        temp_path = self.db_path + ".tmp"
+                        with open(temp_path, "wb") as f:
+                            f.write(file_res.read())
+                        
+                        if os.path.exists(self.db_path):
+                            os.remove(self.db_path)
+                        os.rename(temp_path, self.db_path)
+                        print(f"[備份系統] ✅ 【還原成功】雲端 36KB 舊資料已成功強制覆蓋本地！")
+                    else:
+                        print(f"[備份系統] ❌ 下載備份檔案失敗")
             else:
                 print(f"[備份系統] ⚠️ 雲端找不到大於 20KB 的有效備份檔，將使用本地預設狀態。")
 
@@ -104,6 +107,9 @@ class DatabaseBackup(commands.Cog):
     async def before_auto_backup(self):
         await self.bot.wait_until_ready()
 
+    # ==================================================
+    # 管理員專用：手動儲存資料指令
+    # ==================================================
     @app_commands.command(name="儲存資料", description="【管理員專用】手動將目前的資料庫立刻備份上傳到雲端頻道")
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
@@ -127,6 +133,9 @@ class DatabaseBackup(commands.Cog):
         except Exception as e:
             await interaction.followup.send(f"❌ 備份上傳失敗: `{e}`", ephemeral=True)
 
+    # ==================================================
+    # 管理員專用：重製資料指令（帶按鈕防呆）
+    # ==================================================
     @app_commands.command(name="重製資料", description="【管理員專用】將資料庫表格清空重置（請小心使用！）")
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
