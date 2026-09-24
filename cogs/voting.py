@@ -1,3 +1,8 @@
+# ==================================================
+# 檔案名稱：cogs/voting.py
+# 檔案用途：具備身分組 ID 權重與自動結算的公會決議投票系統
+# ==================================================
+
 import asyncio
 from datetime import datetime, timedelta
 import discord
@@ -6,19 +11,30 @@ from discord.ext import commands
 
 active_polls = {}
 
+# ==========================================
+# ⚙️ 身分組權重設定區 (改用 Discord 身分組 ID)
+# ==========================================
+# 說明：
+# 1. 鍵 (Key) 請填入身分組的數字 ID (字串格式或整數皆可)。
+# 2. 值 (Value) 代表該身分組的投票權重（票權）。
+# 3. 你可以隨時在這裡新增、修改或刪除任何身分組權重。
+# ==========================================
 ROLE_WEIGHTS = {
-    "會長": 3,
-    "長老": 2,
-    "副會長": 2,
-    "核心幹部": 2
+    123456789012345678: 3,  # 範例：會長身分組 ID (權重 3 票)
+    234567890123456789: 2,  # 範例：幹部身分組 ID (權重 2 票)
+    345678901234567890: 1,  # 範例：會員身分組 ID (權重 1 票)
+    # 💡 想要新增其他身分組？直接在這裡加一行：
+    # 987654321098765432: 1.5,
 }
 
 def get_user_vote_weight(member: discord.Member) -> int:
-    highest_weight = 1
+    """計算使用者擁有的最高投票權重（透過比對身分組 ID）"""
+    highest_weight = 1  # 預設最低基本票權
     for role in member.roles:
-        if role.name in ROLE_WEIGHTS:
-            if ROLE_WEIGHTS[role.name] > highest_weight:
-                highest_weight = ROLE_WEIGHTS[role.name]
+        # 檢查該身分組的 ID 是否存在於我們的權重對照表中
+        if role.id in ROLE_WEIGHTS:
+            if ROLE_WEIGHTS[role.id] > highest_weight:
+                highest_weight = ROLE_WEIGHTS[role.id]
     return highest_weight
 
 def generate_poll_embed(poll_data: dict) -> discord.Embed:
@@ -26,7 +42,7 @@ def generate_poll_embed(poll_data: dict) -> discord.Embed:
     
     embed = discord.Embed(
         title=f"📊 公會決議：{poll_data['title']}",
-        description="請點擊下方按鈕進行投票。（系統會自動計算身分組權重）",
+        description="請點擊下方按鈕進行投票。（系統會自動計算身分組 ID 權重）",
         color=discord.Color.gold()
     )
     
