@@ -1,17 +1,25 @@
 # ==================================================
 # 檔案名稱：utils/database.py
-# 檔案用途：SQLite 資料庫核心初始化與連線管理
+# 檔案用途：SQLite 資料庫核心初始化與連線管理（絕對路徑防護版）
 # ==================================================
 
 import sqlite3
 import json
 import os
 
-DB_FILE = "guild_database.db"
-JSON_DB_PATH = "guild_data.json"
+# 🛡️ 取得目前專案根目錄的絕對路徑，確保所有模組讀寫同一個檔案
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DB_FILE = os.path.join(BASE_DIR, "guild_database.db")
+JSON_DB_PATH = os.path.join(BASE_DIR, "guild_data.json")
+
+def get_db_connection():
+    """提供統一的資料庫連線函式（強制使用絕對路徑）"""
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 def init_db():
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     cursor = conn.cursor()
     
     # 1. 會員與活躍度表
@@ -88,8 +96,6 @@ def init_db():
     
     conn.commit()
     conn.close()
-
-# ❌ 刪除原本底部的自動執行：init_db()
 
 def load_data():
     if not os.path.exists(JSON_DB_PATH):
