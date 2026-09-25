@@ -20,6 +20,20 @@ class GiveawayView(discord.ui.View):
         # 使用共用連線
         conn = get_db_connection()
         cursor = conn.cursor()
+        
+        # 確保資料表存在（預防萬一）
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS giveaways (
+                message_id INTEGER PRIMARY KEY,
+                channel_id INTEGER,
+                prize TEXT,
+                winners_count INTEGER,
+                end_timestamp REAL,
+                participants TEXT,
+                ended INTEGER DEFAULT 0
+            )
+        """)
+        
         cursor.execute("SELECT participants, ended FROM giveaways WHERE message_id = ?", (self.message_id,))
         row = cursor.fetchone()
         
@@ -54,7 +68,26 @@ class GiveawayView(discord.ui.View):
 class GiveawayCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        # 確保啟動時資料表存在
+        self.init_db()
         self.bot.loop.create_task(self.check_pending_giveaways())
+
+    def init_db(self):
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS giveaways (
+                message_id INTEGER PRIMARY KEY,
+                channel_id INTEGER,
+                prize TEXT,
+                winners_count INTEGER,
+                end_timestamp REAL,
+                participants TEXT,
+                ended INTEGER DEFAULT 0
+            )
+        """)
+        conn.commit()
+        conn.close()
 
     async def check_pending_giveaways(self):
         await self.bot.wait_until_ready()
@@ -124,7 +157,7 @@ class GiveawayCog(commands.Cog):
 
         message = await interaction.channel.send(embed=embed)
         view = GiveawayView(self, message.id)
-        await message.id_edit(view=view) if hasattr(message, 'id_edit') else await message.edit(view=view)
+        await message.edit(view=view)
 
         conn = get_db_connection()
         cursor = conn.cursor()
