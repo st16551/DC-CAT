@@ -50,40 +50,134 @@ def init_db():
 
 init_db()
 
-# 網頁前端 HTML 模板 (包含現代化介面、分頁籤、登記表單與即時同步)
+# 網頁前端 HTML 模板 (已改為沉浸式 MMORPG 遊戲風暗黑介面)
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head>
     <meta charset="utf-8">
-    <title>SpiritVale 公會打寶與分錢管理系統</title>
+    <title>SpiritVale 戰利品管理系統</title>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: #f8f9fa; margin: 0; padding: 20px; color: #333; }
-        .container { max-width: 1100px; margin: auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
-        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #eaeaea; padding-bottom: 15px; margin-bottom: 20px; }
-        h2 { margin: 0; color: #1a1a1a; }
-        .user-bar { display: flex; align-items: center; gap: 10px; }
-        .btn { padding: 8px 16px; text-decoration: none; border-radius: 6px; background: #2f855a; color: white; border: none; cursor: pointer; font-size: 14px; font-weight: 500; transition: background 0.2s; }
-        .btn:hover { background: #276749; }
-        .btn-secondary { background: #718096; }
-        .btn-secondary:hover { background: #4a5568; }
-        .btn-discord { background: #5865F2; }
+        :root {
+            --bg-color: #0b0f19;
+            --panel-bg: #131c2e;
+            --panel-border: #1e293b;
+            --text-main: #f1f5f9;
+            --text-muted: #94a3b8;
+            --accent-gold: #f59e0b;
+            --accent-blue: #3b82f6;
+            --accent-green: #10b981;
+            --danger-red: #ef4444;
+        }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; 
+            background-color: var(--bg-color); 
+            margin: 0; 
+            padding: 30px; 
+            color: var(--text-main); 
+        }
+        .container { 
+            max-width: 1150px; 
+            margin: auto; 
+            background: var(--panel-bg); 
+            padding: 35px; 
+            border-radius: 16px; 
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5); 
+            border: 1px solid rgba(245, 158, 11, 0.2); 
+        }
+        .header { 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center; 
+            border-bottom: 1px solid var(--panel-border); 
+            padding-bottom: 20px; 
+            margin-bottom: 25px; 
+        }
+        h2 { 
+            margin: 0; 
+            color: var(--accent-gold); 
+            font-size: 22px; 
+            letter-spacing: 0.5px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .user-bar { display: flex; align-items: center; gap: 12px; font-size: 14px; color: var(--text-muted); }
+        .user-bar b { color: var(--text-main); }
+        
+        .btn { 
+            padding: 9px 18px; 
+            text-decoration: none; 
+            border-radius: 8px; 
+            background: linear-gradient(135deg, #059669, #047857); 
+            color: white; 
+            border: none; 
+            cursor: pointer; 
+            font-size: 14px; 
+            font-weight: 600; 
+            transition: all 0.2s; 
+            box-shadow: 0 4px 12px rgba(5, 150, 105, 0.3);
+        }
+        .btn:hover { transform: translateY(-1px); filter: brightness(1.1); }
+        .btn-secondary { background: #334155; box-shadow: none; }
+        .btn-secondary:hover { background: #475569; }
+        .btn-discord { background: #5865F2; box-shadow: 0 4px 12px rgba(88, 101, 242, 0.3); }
         .btn-discord:hover { background: #4752c4; }
-        .nav-tabs { display: flex; gap: 10px; margin-bottom: 25px; border-bottom: 1px solid #dee2e6; padding-bottom: 10px; }
-        .nav-tab { padding: 8px 16px; border-radius: 6px; text-decoration: none; color: #4a5568; background: #edf2f7; font-weight: 500; }
-        .nav-tab.active { background: #3182ce; color: white; }
-        .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.02); }
-        .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 15px; }
-        .form-group { display: flex; flex-direction: column; gap: 5px; }
+        
+        .nav-tabs { display: flex; gap: 12px; margin-bottom: 30px; }
+        .nav-tab { 
+            padding: 10px 20px; 
+            border-radius: 8px; 
+            text-decoration: none; 
+            color: var(--text-muted); 
+            background: #0f172a; 
+            font-weight: 600; 
+            font-size: 14px;
+            border: 1px solid var(--panel-border);
+            transition: all 0.2s;
+        }
+        .nav-tab:hover { color: var(--text-main); border-color: #475569; }
+        .nav-tab.active { 
+            background: linear-gradient(135deg, #2563eb, #1d4ed8); 
+            color: white; 
+            border-color: transparent;
+            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4);
+        }
+        
+        .card { 
+            background: #0f172a; 
+            border: 1px solid var(--panel-border); 
+            border-radius: 12px; 
+            padding: 25px; 
+            margin-bottom: 25px; 
+        }
+        .card h3 { margin-top: 0; color: #f8fafc; font-size: 18px; margin-bottom: 20px; border-left: 4px solid var(--accent-gold); padding-left: 10px; }
+        
+        .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
+        .form-group { display: flex; flex-direction: column; gap: 8px; }
         .form-group.full { grid-column: span 2; }
-        label { font-weight: 600; font-size: 13px; color: #4a5568; }
-        input, textarea, select { padding: 10px; border: 1px solid #cbd5e0; border-radius: 6px; font-size: 14px; }
+        label { font-weight: 600; font-size: 13px; color: var(--text-muted); }
+        
+        input, textarea, select { 
+            padding: 12px; 
+            background: #1e293b; 
+            border: 1px solid #334155; 
+            border-radius: 8px; 
+            color: white; 
+            font-size: 14px; 
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        input:focus, textarea:focus { border-color: var(--accent-gold); }
+        
         table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-        th, td { padding: 12px; border-bottom: 1px solid #edf2f7; text-align: left; font-size: 14px; }
-        th { background-color: #f7fafc; color: #2d3748; font-weight: 600; }
-        .status-tag { padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: bold; }
-        .status-0 { background: #fed7d7; color: #9b2c2c; }
-        .status-1 { background: #c6f6d5; color: #22543d; }
+        th, td { padding: 14px; border-bottom: 1px solid var(--panel-border); text-align: left; font-size: 14px; }
+        th { background-color: #162032; color: var(--text-muted); font-weight: 600; }
+        tr:hover td { background-color: rgba(255, 255, 255, 0.02); }
+        
+        .status-tag { padding: 5px 10px; border-radius: 6px; font-size: 12px; font-weight: bold; }
+        .status-0 { background: rgba(239, 68, 68, 0.15); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.3); }
+        .status-1 { background: rgba(16, 185, 129, 0.15); color: #6ee7b7; border: 1px solid rgba(16, 185, 129, 0.3); }
     </style>
 </head>
 <body>
@@ -92,8 +186,8 @@ HTML_TEMPLATE = """
             <h2>🛡️ SpiritVale 戰利品管理系統</h2>
             <div class="user-bar">
                 {% if user %}
-                    <span>👤 <b>{{ user.username }}</b> {% if is_admin %}<span style="color:red;">(幹部)</span>{% endif %}</span>
-                    <a href="/logout" class="btn btn-secondary" style="padding: 6px 12px;">登出</a>
+                    <span>👤 <b>{{ user.username }}</b> {% if is_admin %}<span style="color:var(--accent-gold);">(幹部)</span>{% endif %}</span>
+                    <a href="/logout" class="btn btn-secondary" style="padding: 6px 12px; font-size: 13px;">登出</a>
                 {% else %}
                     <a href="/login" class="btn btn-discord">🔐 使用 Discord 登入</a>
                 {% endif %}
@@ -101,7 +195,7 @@ HTML_TEMPLATE = """
         </div>
 
         <div class="nav-tabs">
-            <a href="/?tab=dashboard" class="nav-tab {% if tab == 'dashboard' %}active{% endif %}">📊 分錢總覽</a>
+            <a href="/?tab=dashboard" class="nav-tab {% if tab == 'dashboard' %}active{% endif %}">📊 分錢與未領總覽</a>
             <a href="/?tab=create" class="nav-tab {% if tab == 'create' %}active{% endif %}">➕ 登記打寶項目</a>
             <a href="/?tab=pending" class="nav-tab {% if tab == 'pending' %}active{% endif %}">⏳ 待售寶物庫</a>
         </div>
@@ -158,14 +252,14 @@ HTML_TEMPLATE = """
                     <td>{{ p[2] }}</td>
                     <td>{{ p[4].split(',')|length }} 人</td>
                     <td>
-                        <form action="/activate/{{ p[0] }}" method="POST" style="display:inline;">
-                            <input type="number" name="sold_price" placeholder="輸入售出總金額" required style="width: 130px; padding: 6px;">
-                            <button type="submit" class="btn" style="padding: 6px 12px;">售出結算並發放</button>
+                        <form action="/activate/{{ p[0] }}" method="POST" style="display:inline; display:flex; gap:8px; align-items:center;">
+                            <input type="number" name="sold_price" placeholder="輸入售出總金額" required style="width: 140px; padding: 8px;">
+                            <button type="submit" class="btn" style="padding: 8px 14px;">售出結算並發放</button>
                         </form>
                     </td>
                 </tr>
                 {% else %}
-                <tr><td colspan="5" style="text-align:center; color:#718096;">目前沒有待售寶物。</td></tr>
+                <tr><td colspan="5" style="text-align:center; color:var(--text-muted); padding: 30px;">目前沒有待售寶物。</td></tr>
                 {% endfor %}
             </table>
         </div>
@@ -188,7 +282,7 @@ HTML_TEMPLATE = """
                     <td>{{ row[0] }}</td>
                     <td><b>{{ row[1] }}</b></td>
                     <td>{{ row[2] }}</td>
-                    <td>{{ "{:,}".format(row[3]|int) }} 元</td>
+                    <td><span style="color: var(--accent-gold);">{{ "{:,}".format(row[3]|int) }}</span> 元</td>
                     <td>{{ row[4] }}</td>
                     <td>
                         {% if row[5] == 1 %}
@@ -202,16 +296,16 @@ HTML_TEMPLATE = """
                             {% if is_admin or user.username == row[1] or user.global_name == row[1] %}
                                 <form action="/toggle/{{ row[0] }}" method="POST" style="margin:0;">
                                     {% if row[5] == 1 %}
-                                        <button type="submit" class="btn btn-secondary" style="padding: 4px 8px; font-size:12px;">改為未領</button>
+                                        <button type="submit" class="btn btn-secondary" style="padding: 5px 10px; font-size:12px;">改為未領</button>
                                     {% else %}
-                                        <button type="submit" class="btn" style="padding: 4px 8px; font-size:12px;">確認已領</button>
+                                        <button type="submit" class="btn" style="padding: 5px 10px; font-size:12px;">確認已領</button>
                                     {% endif %}
                                 </form>
                             {% else %}
-                                <span style="color:#a0aec0; font-size:12px;">非本人</span>
+                                <span style="color:var(--text-muted); font-size:12px;">非本人</span>
                             {% endif %}
                         {% else %}
-                            <a href="/login" class="btn btn-discord" style="padding: 4px 8px; font-size:12px;">登入修改</a>
+                            <a href="/login" class="btn btn-discord" style="padding: 5px 10px; font-size:12px;">登入修改</a>
                         {% endif %}
                     </td>
                 </tr>
