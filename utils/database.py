@@ -3,14 +3,15 @@
 # 檔案用途：SQLite 資料庫核心初始化與連線管理（絕對路徑防護版）
 # ==================================================
 
-import sqlite3
 import json
 import os
+import sqlite3
 
 # 🛡️ 取得目前專案根目錄的絕對路徑，確保所有模組讀寫同一個檔案
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_FILE = os.path.join(BASE_DIR, "guild_database.db")
 JSON_DB_PATH = os.path.join(BASE_DIR, "guild_data.json")
+
 
 def get_db_connection():
     """提供統一的資料庫連線函式（強制使用絕對路徑）"""
@@ -18,19 +19,27 @@ def get_db_connection():
     conn.row_factory = sqlite3.Row
     return conn
 
+
 def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
-    
-    # 1. 會員與活躍度表
+
+    # 1. 會員與活躍度表（已補上 message_count 欄位）
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             discord_id INTEGER PRIMARY KEY,
-            joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            joined_id TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            message_count INTEGER DEFAULT 0
         )
     """)
-    
+
+    # 🛡️ 自動防護：如果舊資料庫的 users 表已經存在但沒有 message_count 欄位，自動補上
+    try:
+        cursor.execute("SELECT message_count FROM users LIMIT 1")
+    except sqlite3.OperationalError:
+        cursor.execute("ALTER TABLE users ADD COLUMN message_count INTEGER DEFAULT 0")
+
     # 2. 遊戲角色表
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS game_characters (
@@ -42,7 +51,7 @@ def init_db():
             FOREIGN KEY (discord_id) REFERENCES users (discord_id)
         )
     """)
-    
+
     # 3. 請假紀錄表
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS leaves (
@@ -119,6 +128,7 @@ def init_db():
     conn.commit()
     conn.close()
 
+
 def load_data():
     if not os.path.exists(JSON_DB_PATH):
         return {}
@@ -127,6 +137,7 @@ def load_data():
             return json.load(f)
     except json.JSONDecodeError:
         return {}
+
 
 def save_data(data):
     with open(JSON_DB_PATH, "w", encoding="utf-8") as f:
