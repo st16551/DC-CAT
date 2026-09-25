@@ -367,6 +367,9 @@ class BlackMarketCog(commands.Cog):
       name="黑市", description="開啟地下黑市，購買整人與詛咒道具"
   )
   async def black_market(self, interaction: discord.Interaction):
+    # 🛡️ 立即回報 Discord 正在處理，防止 3 秒逾時 (10062 Unknown interaction)
+    await interaction.response.defer(ephemeral=True)
+
     embed = discord.Embed(
         title="🏴‍☠️ 地下黑市道具坊",
         description=(
@@ -386,7 +389,9 @@ class BlackMarketCog(commands.Cog):
         inline=False,
     )
     view = BlackMarketView()
-    await interaction.response.send_message(
+    
+    # 搭配 defer 使用 followup 發送
+    await interaction.followup.send(
         embed=embed, view=view, ephemeral=True
     )
 
