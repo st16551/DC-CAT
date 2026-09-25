@@ -8,7 +8,7 @@ app.secret_key = "my_guild_secret_key_abcxyz888_666"  # 隨機密鑰
 # ==================== 🛠️ 請在這裡填入你的 Discord 設定 ====================
 CLIENT_ID = "1549954226937929778"
 CLIENT_SECRET = "Mh4hq0GCl5oWSjzHEIPQgKnIw7eddvjg"
-REDIRECT_URI = "http://localhost:5000/callback"
+REDIRECT_URI = "https://dc-cat.onrender.com"
 
 # 幹部的 Discord ID 清單（擁有最高權限，可以修改任何人狀態）
 # 範例: ["123456789012345678", "987654321098765432"]
