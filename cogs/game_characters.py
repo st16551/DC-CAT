@@ -11,7 +11,7 @@ import os
 
 DB_FILE = "guild_database.db"
 
-# 🔗 Google 試算表設定（使用你提供的金鑰與 ID）
+# 🔗 Google 試算表設定
 SPREADSHEET_ID = "12AP1pzhqeskwhYY5piaYGasRNifLdCpgoddjxVM5yg4"
 CREDENTIALS_FILE = "service_account.json"
 TARGET_WORKSHEET_NAME = "請假紀錄"
@@ -52,7 +52,6 @@ def init_db():
 
 init_db()
 
-# 📊 自動同步所有請假紀錄到 Google 試算表的輔助函數
 def sync_leaves_to_sheet():
     try:
         conn = sqlite3.connect(DB_FILE)
@@ -83,9 +82,6 @@ def sync_leaves_to_sheet():
         print(f"⚠️ [試算表同步失敗]: {e}")
         return False
 
-
-# ===================== 請假互動視窗與按鈕 =====================
-
 class LeaveModal(discord.ui.Modal, title="📝 填寫公會請假單"):
     start_date_input = discord.ui.TextInput(
         label="開始日期 (格式: 月/日)",
@@ -95,7 +91,7 @@ class LeaveModal(discord.ui.Modal, title="📝 填寫公會請假單"):
     )
     end_date_input = discord.ui.TextInput(
         label="結束日期 (格式: 月/日)",
-        placeholder="例如：9/15 (如果當天請完可填同一天)",
+        placeholder="例如：9/15",
         required=True,
         max_length=20
     )
@@ -192,7 +188,6 @@ class LeaveModal(discord.ui.Modal, title="📝 填寫公會請假單"):
             except Exception:
                 pass
 
-
 class LeaveReviewView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -263,8 +258,6 @@ class LeaveReviewView(discord.ui.View):
         else:
             await interaction.followup.send(f"❌ 已經駁回了該位成員的請假申請。", ephemeral=True)
 
-
-# 生成方格月曆的輔助函數
 def generate_calendar_text(guild):
     now = datetime.now()
     year = now.year
