@@ -55,7 +55,7 @@ class WordFilterCog(commands.Cog):
         # 3. 逐一檢查黑名單
         for word in BAD_WORDS:
             # 如果是短英文（如 sb, gy），要求獨立成單字或符合邊界，避免英文字母內嵌被誤殺
-            if word.ascii and len(word) <= 3:
+           if word.isascii() and len(word) <= 3:
                 pattern = rf'\b{re.escape(word)}\b'
                 if re.search(pattern, content, re.IGNORECASE):
                     return True
