@@ -40,22 +40,28 @@ BLACK_MARKET_ITEMS = {
 
 
 def safe_modify_balance(user_id, amount):
+  """🛡️ 萬能安全扣款防護：確保會員在資料庫有錢包記錄後才執行扣款"""
   try:
-    return modify_balance(user_id, amount)
-  except TypeError:
+    uid = int(user_id)
+    amt = int(amount)
+
+    # 1. 自動防護：確保 member_levels 裡面一定有這個人的錢包紀錄，沒有就補創立
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT OR IGNORE INTO member_levels (discord_id, level, su_coins, messages_count, voice_hours, exp, max_exp) VALUES (?, 1, 0, 0, 0.0, 0, 100)",
+        (uid,),
+    )
+    conn.commit()
+    conn.close()
+
+    # 2. 執行原生扣款
     try:
-      return modify_balance(
-          user_id,
-          amount,
-          tx_type="black_market",
-          sender_id="BLACK_MARKET",
-      )
-    except Exception:
-      try:
-        return modify_balance(str(user_id), int(amount))
-      except Exception:
-        return False
-  except Exception:
+      return modify_balance(uid, amt)
+    except TypeError:
+      return modify_balance(str(uid), amt)
+  except Exception as e:
+    print(f"❌ 絕對防護扣款報錯: {e}")
     return False
 
 
@@ -380,7 +386,6 @@ class BlackMarketCog(commands.Cog):
       name="黑市", description="開啟地下黑市，購買整人與詛咒道具"
   )
   async def black_market(self, interaction: discord.Interaction):
-    # ⚡ 移除容易衝突的 defer，直接以最快速度回應 send_message
     embed = discord.Embed(
         title="🏴‍☠️ 地下黑市道具坊",
         description=(
