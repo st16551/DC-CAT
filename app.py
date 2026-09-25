@@ -3,6 +3,7 @@ import sqlite3
 import requests
 import csv
 import io
+import json
 from datetime import datetime
 
 app = Flask(__name__)
@@ -28,19 +29,17 @@ def fetch_guild_members_from_sheet():
         if response.status_code == 200:
             decoded_content = response.content.decode('utf-8')
             reader = csv.reader(io.StringIO(decoded_content))
-            next(reader, None) # 跳過標題列（如果有）
+            next(reader, None) # 跳過標題列
             for row in reader:
                 if len(row) >= 3:
                     discord_account = row[1].strip() if len(row) > 1 else ""
                     game_name = row[2].strip() if len(row) > 2 else ""
                     job = row[3].strip() if len(row) > 3 else ""
-                    # 組合顯示名稱格式： 職業-遊戲角色 (Discord帳號)
                     display_str = f"{job}-{game_name}({discord_account})" if job and game_name else (game_name or discord_account)
                     if display_str and display_str not in members:
                         members.append(display_str)
     except Exception as e:
         print("讀取 Google 試算表失敗，使用備用名單:", e)
-        # 若連線異常時的備用防呆清單
         members = ["聖騎士-高須鼠兒[高須]", "死靈-Pongdog(胖打)"]
     return members
 
@@ -56,7 +55,9 @@ def init_db():
             members TEXT,
             total_price REAL,
             tax_rate REAL,
-            status TEXT DEFAULT 'pending'
+            status TEXT DEFAULT 'pending',
+            updated_by TEXT,
+            updated_at TEXT
         )
     ''')
     cursor.execute('''
@@ -76,7 +77,7 @@ def init_db():
 
 init_db()
 
-# 儀表板 HTML 模板 (含 Google 試算表動態同步與智慧標籤選擇器)
+# 儀表板 HTML 模板 (已新增「修改紀錄」側邊欄選項與檢視頁面)
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
@@ -154,7 +155,7 @@ HTML_TEMPLATE = """
         .stat-value { font-size: 22px; font-weight: 700; color: var(--accent-gold); }
         
         .card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 14px; padding: 25px; margin-bottom: 25px; box-shadow: 0 8px 24px rgba(0,0,0,0.3); }
-        .card h3 { margin-top: 0; font-size: 16px; color: var(--text-main); margin-bottom: 20px; display: flex; align-items: center; gap: 8px; }
+        .card h3 { margin-top: 0; font-size: 16px; color: var(--text-main); margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between; }
         
         .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
         .form-group { display: flex; flex-direction: column; gap: 8px; }
@@ -173,7 +174,6 @@ HTML_TEMPLATE = """
         }
         input:focus, textarea:focus { border-color: var(--accent-gold); }
         
-        /* 成員快速點選標籤面板樣式 */
         .member-picker-box { background: #0b101d; border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; margin-top: 8px; }
         .member-search-input { width: 100%; margin-bottom: 10px; }
         .member-suggestions { display: flex; flex-wrap: wrap; gap: 6px; max-height: 140px; overflow-y: auto; padding: 4px; }
@@ -192,6 +192,7 @@ HTML_TEMPLATE = """
         }
         .btn:hover { transform: translateY(-1px); filter: brightness(1.1); }
         .btn-secondary { background: #334155; box-shadow: none; }
+        .btn-secondary:hover { background: #475569; }
         .btn-discord { background: #5865F2; box-shadow: 0 4px 12px rgba(88, 101, 242, 0.3); width: 100%; }
         
         table { width: 100%; border-collapse: collapse; margin-top: 5px; }
@@ -212,6 +213,7 @@ HTML_TEMPLATE = """
                 <a href="/?tab=dashboard" class="nav-item {% if tab == 'dashboard' %}active{% endif %}"><span>📊</span> 分錢明細總覽</a>
                 <a href="/?tab=create" class="nav-item {% if tab == 'create' %}active{% endif %}"><span>➕</span> 登記打寶項目</a>
                 <a href="/?tab=pending" class="nav-item {% if tab == 'pending' %}active{% endif %}"><span>⏳</span> 待售寶物庫</a>
+                <a href="/?tab=logs" class="nav-item {% if tab == 'logs' %}active{% endif %}"><span>📜</span> 修改紀錄</a>
             </div>
         </div>
         <div class="user-panel">
@@ -227,7 +229,12 @@ HTML_TEMPLATE = """
 
     <div class="main-content">
         <div class="top-bar">
-            <h1>{% if tab == 'create' %}登記打寶項目{% elif tab == 'pending' %}待售寶物庫管理{% else %}分錢與領取狀態總覽{% endif %}</h1>
+            <h1>
+                {% if tab == 'create' %}登記打寶項目
+                {% elif tab == 'pending' %}待售寶物庫管理
+                {% elif tab == 'logs' %}系統編輯修改紀錄
+                {% else %}分錢與領取狀態總覽{% endif %}
+            </h1>
         </div>
 
         {% if tab == 'dashboard' %}
@@ -266,7 +273,7 @@ HTML_TEMPLATE = """
                     <td>
                         {% if user %}
                             {% if is_admin or user.username == row[1] or user.global_name == row[1] %}
-                                <form action="/toggle/{{ row[0] }}" method="POST" style="margin:0;">
+                                <form action="/toggle/{{ row[0] }}" method="POST" style="margin:0; display:inline;" onsubmit="return confirm('確定要切換此筆領取狀態嗎？');">
                                     {% if row[5] == 1 %}
                                         <button type="submit" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;">改為未領</button>
                                     {% else %}
@@ -289,30 +296,30 @@ HTML_TEMPLATE = """
 
         {% elif tab == 'create' %}
         <div class="card">
-            <h3>📝 填寫打寶與分紅資訊 (成員名單已自動從 Google 試算表同步)</h3>
-            <form action="/create_loot" method="POST" id="lootForm">
+            <h3>
+                <span>📝 填寫打寶與分紅資訊</span>
+                <button type="button" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="copyLastForm()">📋 複製上一次表單</button>
+            </h3>
+            <form action="/create_loot" method="POST" id="lootForm" onsubmit="return confirmAndSaveForm()">
                 <div class="form-grid">
                     <div class="form-group">
                         <label>開單負責人</label>
-                        <input type="text" name="leader_name" value="{{ user.global_name if user and user.global_name else (user.username if user else '') }}" required placeholder="負責人名稱">
+                        <input type="text" id="leader_name" name="leader_name" value="{{ user.global_name if user and user.global_name else (user.username if user else '') }}" required placeholder="負責人名稱">
                     </div>
                     <div class="form-group">
                         <label>打寶日期</label>
-                        <input type="date" name="loot_date" value="{{ today }}" required>
+                        <input type="date" id="loot_date" name="loot_date" value="{{ today }}" required>
                     </div>
                     <div class="form-group full">
                         <label>打到的物品名稱</label>
-                        <input type="text" name="item_name" required placeholder="例如：+10 稀有防具 / 王卡">
+                        <input type="text" id="item_name" name="item_name" required placeholder="例如：+10 稀有防具 / 王卡">
                     </div>
                     
-                    <!-- 從 Google 試算表同步的智慧成員選擇器 -->
                     <div class="form-group full">
                         <label>參與人員 (輸入關鍵字快速搜尋並點選，點擊負號可移除)</label>
                         <div class="member-picker-box">
                             <input type="text" id="memberSearch" class="member-search-input" placeholder="🔍 搜尋試算表成員 (例如: 聖騎士、高須、死靈)..." onkeyup="filterMembers()">
-                            <div class="member-suggestions" id="memberSuggestions">
-                                <!-- 動態填入候選人 -->
-                            </div>
+                            <div class="member-suggestions" id="memberSuggestions"></div>
                         </div>
                         <div class="selected-tags" id="selectedTagsContainer">
                             <span style="color: var(--text-muted); font-size: 12px;" id="placeholderText">尚未選擇任何成員，請從上方搜尋點選...</span>
@@ -322,11 +329,11 @@ HTML_TEMPLATE = """
 
                     <div class="form-group">
                         <label>售出總金額 (若未售出填 0 則進入待售庫)</label>
-                        <input type="number" name="total_price" value="0" required>
+                        <input type="number" id="total_price" name="total_price" value="0" required>
                     </div>
                     <div class="form-group">
                         <label>交易所手續費 (%)</label>
-                        <input type="number" name="tax_rate" value="0" step="0.1">
+                        <input type="number" id="tax_rate" name="tax_rate" value="0" step="0.1">
                     </div>
                 </div>
                 <div style="margin-top: 25px;">
@@ -393,6 +400,32 @@ HTML_TEMPLATE = """
                 renderSuggestions(query);
             }
 
+            function confirmAndSaveForm() {
+                if (!confirm("確定要送出這筆打寶登記嗎？")) return false;
+                const formData = {
+                    item_name: document.getElementById("item_name").value,
+                    tax_rate: document.getElementById("tax_rate").value,
+                    members: selectedMembers
+                };
+                localStorage.setItem("last_loot_form", JSON.stringify(formData));
+                return true;
+            }
+
+            function copyLastForm() {
+                const saved = localStorage.getItem("last_loot_form");
+                if (!saved) {
+                    alert("找不到上一次的開單紀錄！");
+                    return;
+                }
+                const data = JSON.parse(saved);
+                document.getElementById("item_name").value = data.item_name || "";
+                document.getElementById("tax_rate").value = data.tax_rate || 0;
+                selectedMembers = data.members || [];
+                renderTags();
+                filterMembers();
+                alert("已成功套用上一次的表單資料！");
+            }
+
             renderSuggestions();
         </script>
 
@@ -405,7 +438,7 @@ HTML_TEMPLATE = """
                     <th>負責人</th>
                     <th>物品名稱</th>
                     <th>參與人數</th>
-                    <th>快速結算操作</th>
+                    <th>操作與編輯</th>
                 </tr>
                 {% for p in pending_projects %}
                 <tr>
@@ -414,14 +447,44 @@ HTML_TEMPLATE = """
                     <td>{{ p[2] }}</td>
                     <td>{{ p[4].split(',')|length }} 人</td>
                     <td>
-                        <form action="/activate/{{ p[0] }}" method="POST" style="display:flex; gap:10px; align-items:center;">
-                            <input type="number" name="sold_price" placeholder="輸入實際售出總金額" required style="width: 160px; padding: 8px;">
-                            <button type="submit" class="btn" style="padding: 8px 14px; font-size: 13px;">完成售出並分錢</button>
-                        </form>
+                        <div style="display: flex; gap: 8px; align-items: center;">
+                            <form action="/activate/{{ p[0] }}" method="POST" style="display:flex; gap:6px; align-items:center;" onsubmit="return confirm('確定要完成此寶物售出並發放分錢嗎？');">
+                                <input type="number" name="sold_price" placeholder="售出金額" required style="width: 110px; padding: 6px;">
+                                <button type="submit" class="btn" style="padding: 6px 10px; font-size: 12px;">結算</button>
+                            </form>
+                            {% if user and (is_admin or user.username == p[1] or user.global_name == p[1]) %}
+                                <a href="/edit/{{ p[0] }}" class="btn btn-secondary" style="padding: 6px 10px; font-size: 12px; text-decoration:none;">編輯</a>
+                            {% endif %}
+                        </div>
                     </td>
                 </tr>
                 {% else %}
                 <tr><td colspan="5" style="text-align:center; color:var(--text-muted); padding: 40px;">目前沒有待售寶物項目。</td></tr>
+                {% endfor %}
+            </table>
+        </div>
+
+        {% elif tab == 'logs' %}
+        <div class="card">
+            <h3>📜 系統編輯修改紀錄總覽 (公開透明查閱)</h3>
+            <table>
+                <tr>
+                    <th>專案編號</th>
+                    <th>原開單負責人</th>
+                    <th>物品名稱</th>
+                    <th>最後修改人</th>
+                    <th>修改時間</th>
+                </tr>
+                {% for log in edit_logs %}
+                <tr>
+                    <td>#{{ log[0] }}</td>
+                    <td><b>{{ log[1] }}</b></td>
+                    <td>{{ log[2] }}</td>
+                    <td><span style="color: var(--accent-gold); font-weight: 600;">{{ log[8] }}</span></td>
+                    <td>{{ log[9] }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="5" style="text-align:center; color:var(--text-muted); padding: 40px;">目前尚無任何修改紀錄。</td></tr>
                 {% endfor %}
             </table>
         </div>
@@ -433,13 +496,11 @@ HTML_TEMPLATE = """
 
 @app.route('/')
 def index():
-    import json
     user = session.get('user')
     is_admin = user and user.get('id') in ADMIN_DISCORD_IDS
     tab = request.args.get('tab', 'dashboard')
     today = datetime.now().strftime('%Y-%m-%d')
 
-    # 每次開啟頁面自動向你的 Google 試算表同步最新名單
     guild_members = fetch_guild_members_from_sheet()
 
     conn = sqlite3.connect("guild_database.db")
@@ -451,11 +512,96 @@ def index():
 
     cursor.execute("SELECT id, member_name, item_name, total_per_person, leader_name, status FROM split_records ORDER BY id DESC")
     records = cursor.fetchall()
+
+    # 撈取有被修改過的紀錄清單 (有 updated_by 的專案)
+    cursor.execute("SELECT id, leader_name, item_name, loot_date, members, total_price, tax_rate, status, updated_by, updated_at FROM loot_projects WHERE updated_by IS NOT NULL ORDER BY updated_at DESC")
+    edit_logs = cursor.fetchall()
+
     conn.close()
 
     members_json = json.dumps(guild_members, ensure_ascii=False)
 
-    return render_template_string(HTML_TEMPLATE, user=user, is_admin=is_admin, tab=tab, today=today, pending_projects=pending_projects, pending_count=pending_count, records=records, members_json=members_json)
+    return render_template_string(HTML_TEMPLATE, user=user, is_admin=is_admin, tab=tab, today=today, pending_projects=pending_projects, pending_count=pending_count, records=records, edit_logs=edit_logs, members_json=members_json)
+
+# 安全防護的編輯頁面路由 (含編輯紀錄日誌 Audit Log)
+@app.route('/edit/<int:project_id>', methods=['GET', 'POST'])
+def edit_project(project_id):
+    user = session.get('user')
+    if not user:
+        return redirect(url_for('login'))
+
+    conn = sqlite3.connect("guild_database.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, leader_name, item_name, loot_date, members, total_price, tax_rate, status, updated_by, updated_at FROM loot_projects WHERE id = ?", (project_id,))
+    proj = cursor.fetchone()
+
+    if not proj:
+        conn.close()
+        return "找不到該筆打寶記錄！", 404
+
+    is_admin = user.get('id') in ADMIN_DISCORD_IDS
+    leader_name = proj[1]
+
+    # 嚴格權限檢查：只有原作者或幹部才能編輯
+    if not is_admin and user.get('username') != leader_name and user.get('global_name') != leader_name:
+        conn.close()
+        return "權限不足：您不是此筆打寶記錄的開單負責人或幹部，無法進行編輯！", 403
+
+    if request.method == 'POST':
+        item_name = request.form.get('item_name')
+        members_raw = request.form.get('members', '')
+        tax_rate = float(request.form.get('tax_rate', 0))
+        
+        # 記錄編輯日誌 Audit Log (誰在什麼時候修改的)
+        editor_name = user.get('global_name') or user.get('username')
+        now_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        cursor.execute("UPDATE loot_projects SET item_name = ?, members = ?, tax_rate = ?, updated_by = ?, updated_at = ? WHERE id = ?", 
+                       (item_name, members_raw, tax_rate, editor_name, now_time, project_id))
+        conn.commit()
+        conn.close()
+        return redirect(url_for('index', tab='pending'))
+
+    conn.close()
+    
+    EDIT_TEMPLATE = """
+    <!DOCTYPE html>
+    <html>
+    <head><meta charset="utf-8"><title>編輯打寶項目</title>
+    <style>
+        body { background: #07090e; color: #f8fafc; font-family: sans-serif; padding: 40px; }
+        .card { background: #131b2e; border: 1px solid #1e293b; padding: 30px; border-radius: 12px; max-width: 600px; margin: auto; }
+        input, textarea { width: 100%; padding: 12px; background: #0b101d; border: 1px solid #1e293b; color: white; border-radius: 8px; margin-top: 6px; margin-bottom: 20px; }
+        .btn { padding: 10px 20px; background: #059669; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; text-decoration: none; }
+        .btn-secondary { background: #334155; }
+    </style>
+    </head>
+    <body>
+        <div class="card">
+            <h2>✏️ 編輯打寶項目 (#{{ proj[0] }})</h2>
+            {% if proj[8] %}
+                <p style="font-size: 12px; color: #94a3b8;">最後修改紀錄：由 <b>{{ proj[8] }}</b> 於 {{ proj[9] }} 進行修改</p>
+            {% endif %}
+            <form method="POST" onsubmit="return confirm('確定要儲存這項修改嗎？');">
+                <label>物品名稱</label>
+                <input type="text" name="item_name" value="{{ proj[2] }}" required>
+                
+                <label>參與人員 (請用半形逗號分隔)</label>
+                <textarea name="members" rows="4" required>{{ proj[4] }}</textarea>
+                
+                <label>交易所手續費 (%)</label>
+                <input type="number" name="tax_rate" value="{{ proj[6] }}" step="0.1">
+
+                <div style="display: flex; gap: 10px;">
+                    <button type="submit" class="btn">儲存修改</button>
+                    <a href="/?tab=pending" class="btn btn-secondary">取消返回</a>
+                </div>
+            </form>
+        </div>
+    </body>
+    </html>
+    """
+    return render_template_string(EDIT_TEMPLATE, proj=proj)
 
 @app.route('/create_loot', methods=['POST'])
 def create_loot():
