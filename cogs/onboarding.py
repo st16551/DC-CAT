@@ -347,10 +347,14 @@ class InterviewAuditView(discord.ui.View):
             client = get_gspread_client()
             sheet = client.open_by_key(SPREADSHEET_ID).sheet1
             current_time = discord.utils.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            
+            # 💡 已改為：職業-遊戲ID(暱稱) 格式
+            formatted_char_info = f"{self.main_class}-{self.character_name}({self.nickname})"
+            
             sheet.append_row([
                 str(app_id),
                 self.discord_name,
-                self.character_name,
+                formatted_char_info,  # 放入組合後的格式
                 self.main_class,
                 target_branch,
                 current_time
