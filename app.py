@@ -215,7 +215,7 @@ HTML_TEMPLATE = """
 <body>
     <div class="sidebar">
         <div>
-            <div class="brand"><span>🛡️</span> SpiritVale 管理</div>
+            <div class="brand"><span>🛡️</span> Esca專用系統</div>
             <div class="nav-menu">
                 <a href="/?tab=dashboard" class="nav-item {% if tab == 'dashboard' %}active{% endif %}"><span>📊</span> 分錢明細總覽</a>
                 <a href="/?tab=create" class="nav-item {% if tab == 'create' %}active{% endif %}"><span>➕</span> 登記打寶項目</a>
