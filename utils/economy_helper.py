@@ -71,3 +71,7 @@ def get_wallet_balance(discord_id: int) -> int:
     if row:
         return row[0]
     return 0
+
+def modify_balance(user_id: str, user_name: str, amount: int):
+    """修改使用者金幣的相容包裝函數"""
+    return update_user_coins(user_id, user_name, amount)
