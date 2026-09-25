@@ -77,7 +77,7 @@ def sync_leaves_to_sheet():
         except gspread.exceptions.WorksheetNotFound:
             worksheet = spreadsheet.add_worksheet(title=TARGET_WORKSHEET_NAME, rows=1000, cols=10)
 
-        worksheet.update(sheet_rows)
+        worksheet.update(sheet_rows, value_input_option='USER_ENTERED')
         return True
     except Exception as e:
         print(f"⚠️ [試算表同步失敗]: {e}")
