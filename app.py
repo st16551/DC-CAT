@@ -72,12 +72,19 @@ def init_db():
             FOREIGN KEY(project_id) REFERENCES loot_projects(id)
         )
     ''')
+    
+    # 【自動升級資料庫】如果原本沒有記錄「異動摘要」的欄位，自動加上去
+    try:
+        cursor.execute("ALTER TABLE loot_projects ADD COLUMN edit_summary TEXT")
+    except sqlite3.OperationalError:
+        pass # 如果已經有這個欄位了，就會自動跳過，不會報錯
+
     conn.commit()
     conn.close()
 
 init_db()
 
-# 儀表板 HTML 模板 (已新增「修改紀錄」側邊欄選項與檢視頁面)
+# 儀表板 HTML 模板 (已新增「修改紀錄」詳細內容，且已移除所有 confirm)
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
@@ -203,6 +210,7 @@ HTML_TEMPLATE = """
         .status-badge { padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; display: inline-block; }
         .status-unpaid { background: rgba(239, 68, 68, 0.1); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.2); }
         .status-paid { background: rgba(16, 185, 129, 0.1); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.2); }
+        .change-summary { color: #38bdf8; font-size: 13px; line-height: 1.5; }
     </style>
 </head>
 <body>
@@ -273,7 +281,8 @@ HTML_TEMPLATE = """
                     <td>
                         {% if user %}
                             {% if is_admin or user.username == row[1] or user.global_name == row[1] %}
-                                <form action="/toggle/{{ row[0] }}" method="POST" style="margin:0; display:inline;" onsubmit="return confirm('確定要切換此筆領取狀態嗎？');">
+                                <!-- 移除了 confirm，點擊直接切換 -->
+                                <form action="/toggle/{{ row[0] }}" method="POST" style="margin:0; display:inline;">
                                     {% if row[5] == 1 %}
                                         <button type="submit" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;">改為未領</button>
                                     {% else %}
@@ -300,7 +309,7 @@ HTML_TEMPLATE = """
                 <span>📝 填寫打寶與分紅資訊</span>
                 <button type="button" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="copyLastForm()">📋 複製上一次表單</button>
             </h3>
-            <form action="/create_loot" method="POST" id="lootForm" onsubmit="return confirmAndSaveForm()">
+            <form action="/create_loot" method="POST" id="lootForm" onsubmit="return saveFormState()">
                 <div class="form-grid">
                     <div class="form-group">
                         <label>開單負責人</label>
@@ -337,7 +346,7 @@ HTML_TEMPLATE = """
                     </div>
                 </div>
                 <div style="margin-top: 25px;">
-                    <button type="submit" class="btn">🚀 確認送出並同步</button>
+                    <button type="submit" class="btn">🚀 直接送出登記</button>
                 </div>
             </form>
         </div>
@@ -400,8 +409,8 @@ HTML_TEMPLATE = """
                 renderSuggestions(query);
             }
 
-            function confirmAndSaveForm() {
-                if (!confirm("確定要送出這筆打寶登記嗎？")) return false;
+            // 移除了 confirm，直接儲存狀態並送出
+            function saveFormState() {
                 const formData = {
                     item_name: document.getElementById("item_name").value,
                     tax_rate: document.getElementById("tax_rate").value,
@@ -423,7 +432,6 @@ HTML_TEMPLATE = """
                 selectedMembers = data.members || [];
                 renderTags();
                 filterMembers();
-                alert("已成功套用上一次的表單資料！");
             }
 
             renderSuggestions();
@@ -448,7 +456,8 @@ HTML_TEMPLATE = """
                     <td>{{ p[4].split(',')|length }} 人</td>
                     <td>
                         <div style="display: flex; gap: 8px; align-items: center;">
-                            <form action="/activate/{{ p[0] }}" method="POST" style="display:flex; gap:6px; align-items:center;" onsubmit="return confirm('確定要完成此寶物售出並發放分錢嗎？');">
+                            <!-- 移除了 confirm，輸入金額後直接結算 -->
+                            <form action="/activate/{{ p[0] }}" method="POST" style="display:flex; gap:6px; align-items:center;">
                                 <input type="number" name="sold_price" placeholder="售出金額" required style="width: 110px; padding: 6px;">
                                 <button type="submit" class="btn" style="padding: 6px 10px; font-size: 12px;">結算</button>
                             </form>
@@ -472,6 +481,7 @@ HTML_TEMPLATE = """
                     <th>專案編號</th>
                     <th>原開單負責人</th>
                     <th>物品名稱</th>
+                    <th>詳細異動內容</th>
                     <th>最後修改人</th>
                     <th>修改時間</th>
                 </tr>
@@ -480,11 +490,13 @@ HTML_TEMPLATE = """
                     <td>#{{ log[0] }}</td>
                     <td><b>{{ log[1] }}</b></td>
                     <td>{{ log[2] }}</td>
+                    <!-- 顯示詳細的修改內容 -->
+                    <td class="change-summary">{{ log[10] if log[10] else "未記錄變更細節" }}</td>
                     <td><span style="color: var(--accent-gold); font-weight: 600;">{{ log[8] }}</span></td>
                     <td>{{ log[9] }}</td>
                 </tr>
                 {% else %}
-                <tr><td colspan="5" style="text-align:center; color:var(--text-muted); padding: 40px;">目前尚無任何修改紀錄。</td></tr>
+                <tr><td colspan="6" style="text-align:center; color:var(--text-muted); padding: 40px;">目前尚無任何修改紀錄。</td></tr>
                 {% endfor %}
             </table>
         </div>
@@ -513,9 +525,13 @@ def index():
     cursor.execute("SELECT id, member_name, item_name, total_per_person, leader_name, status FROM split_records ORDER BY id DESC")
     records = cursor.fetchall()
 
-    # 撈取有被修改過的紀錄清單 (有 updated_by 的專案)
-    cursor.execute("SELECT id, leader_name, item_name, loot_date, members, total_price, tax_rate, status, updated_by, updated_at FROM loot_projects WHERE updated_by IS NOT NULL ORDER BY updated_at DESC")
-    edit_logs = cursor.fetchall()
+    # 撈取紀錄包含新加入的 edit_summary 欄位 (log[10])
+    try:
+        cursor.execute("SELECT id, leader_name, item_name, loot_date, members, total_price, tax_rate, status, updated_by, updated_at, edit_summary FROM loot_projects WHERE updated_by IS NOT NULL ORDER BY updated_at DESC")
+        edit_logs = cursor.fetchall()
+    except sqlite3.OperationalError:
+        # 萬一升級資料庫還沒完成，暫時給空資料避免閃退
+        edit_logs = []
 
     conn.close()
 
@@ -523,7 +539,7 @@ def index():
 
     return render_template_string(HTML_TEMPLATE, user=user, is_admin=is_admin, tab=tab, today=today, pending_projects=pending_projects, pending_count=pending_count, records=records, edit_logs=edit_logs, members_json=members_json)
 
-# 安全防護的編輯頁面路由 (含編輯紀錄日誌 Audit Log)
+# 安全防護的編輯頁面路由 (含智慧比對異動內容)
 @app.route('/edit/<int:project_id>', methods=['GET', 'POST'])
 def edit_project(project_id):
     user = session.get('user')
@@ -542,7 +558,6 @@ def edit_project(project_id):
     is_admin = user.get('id') in ADMIN_DISCORD_IDS
     leader_name = proj[1]
 
-    # 嚴格權限檢查：只有原作者或幹部才能編輯
     if not is_admin and user.get('username') != leader_name and user.get('global_name') != leader_name:
         conn.close()
         return "權限不足：您不是此筆打寶記錄的開單負責人或幹部，無法進行編輯！", 403
@@ -552,18 +567,44 @@ def edit_project(project_id):
         members_raw = request.form.get('members', '')
         tax_rate = float(request.form.get('tax_rate', 0))
         
-        # 記錄編輯日誌 Audit Log (誰在什麼時候修改的)
+        # === 核心升級：智慧比對異動內容 ===
+        old_item = proj[2]
+        old_tax = float(proj[6])
+        
+        # 抓出舊名單與新名單並轉換成 Set 來比對差異
+        old_members_set = set([m.strip() for m in proj[4].replace('，', ',').split(',') if m.strip()])
+        new_members_set = set([m.strip() for m in members_raw.replace('，', ',').split(',') if m.strip()])
+        
+        added_members = new_members_set - old_members_set
+        removed_members = old_members_set - new_members_set
+        
+        change_messages = []
+        if old_item != item_name:
+            change_messages.append(f"物品更名:「{old_item}」➔「{item_name}」")
+        if added_members:
+            change_messages.append(f"新增人員: {', '.join(added_members)}")
+        if removed_members:
+            change_messages.append(f"移除人員: {', '.join(removed_members)}")
+        if old_tax != tax_rate:
+            change_messages.append(f"手續費: {old_tax}% ➔ {tax_rate}%")
+            
+        change_summary = "；".join(change_messages)
+        if not change_summary:
+            change_summary = "單純更新，無實質內容變更"
+            
         editor_name = user.get('global_name') or user.get('username')
         now_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-        cursor.execute("UPDATE loot_projects SET item_name = ?, members = ?, tax_rate = ?, updated_by = ?, updated_at = ? WHERE id = ?", 
-                       (item_name, members_raw, tax_rate, editor_name, now_time, project_id))
+        # 更新時順便把 change_summary 寫入資料庫
+        cursor.execute("UPDATE loot_projects SET item_name = ?, members = ?, tax_rate = ?, updated_by = ?, updated_at = ?, edit_summary = ? WHERE id = ?", 
+                       (item_name, members_raw, tax_rate, editor_name, now_time, change_summary, project_id))
         conn.commit()
         conn.close()
         return redirect(url_for('index', tab='pending'))
 
     conn.close()
     
+    # 修改頁面的 HTML，也將 confirm 移除了
     EDIT_TEMPLATE = """
     <!DOCTYPE html>
     <html>
@@ -582,7 +623,7 @@ def edit_project(project_id):
             {% if proj[8] %}
                 <p style="font-size: 12px; color: #94a3b8;">最後修改紀錄：由 <b>{{ proj[8] }}</b> 於 {{ proj[9] }} 進行修改</p>
             {% endif %}
-            <form method="POST" onsubmit="return confirm('確定要儲存這項修改嗎？');">
+            <form method="POST">
                 <label>物品名稱</label>
                 <input type="text" name="item_name" value="{{ proj[2] }}" required>
                 
@@ -593,7 +634,7 @@ def edit_project(project_id):
                 <input type="number" name="tax_rate" value="{{ proj[6] }}" step="0.1">
 
                 <div style="display: flex; gap: 10px;">
-                    <button type="submit" class="btn">儲存修改</button>
+                    <button type="submit" class="btn">直接儲存修改</button>
                     <a href="/?tab=pending" class="btn btn-secondary">取消返回</a>
                 </div>
             </form>
@@ -700,18 +741,15 @@ def login():
 def callback():
     code = request.args.get('code')
     resp = requests.post("https://discord.com/api/oauth2/token", data={
-        'client_id': CLIENT_ID, 'client_secret': CLIENT_SECRET, 'grant_type': 'authorization_code', 'code': code, 'redirect_uri': REDIRECT_URI
-    }, headers={'Content-Type': 'application/x-www-form-urlencoded'}).json()
+        'client_id': CLIENT_ID, 'client_secret': CLIENT_SECRET, 'grant_type': 'authorization_code',
+        'code': code, 'redirect_uri': REDIRECT_URI
+    })
     
-    if 'access_token' in resp:
-        user_data = requests.get("https://discord.com/api/users/@me", headers={'Authorization': f"Bearer {resp['access_token']}"}).json()
-        session['user'] = {'id': user_data.get('id'), 'username': user_data.get('username'), 'global_name': user_data.get('global_name')}
-    return redirect(url_for('index'))
-
-@app.route('/logout')
-def logout():
-    session.clear()
+    token = resp.json().get('access_token')
+    if token:
+        user_resp = requests.get("https://discord.com/api/users/@me", headers={'Authorization': f'Bearer {token}'})
+        session['user'] = user_resp.json()
     return redirect(url_for('index'))
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(debug=True, port=5000)
