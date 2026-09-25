@@ -504,7 +504,7 @@ HTML_TEMPLATE = """
 @app.route('/')
 def index():
     user = session.get('user')
-    is_admin = user and user.get('id') in ADMIN_DISCORD_IDS
+    is_admin = user and user.get('id') in ADMIN_DISCORD_IDS  # <-- 已修正此處的括號錯誤
     tab = request.args.get('tab', 'dashboard')
     today = datetime.now().strftime('%Y-%m-%d')
 
@@ -532,7 +532,6 @@ def index():
 
     return render_template_string(HTML_TEMPLATE, user=user, is_admin=is_admin, tab=tab, today=today, pending_projects=pending_projects, pending_count=pending_count, records=records, edit_logs=edit_logs, members_json=members_json)
 
-# 升級後的編輯頁面路由 (含智慧標籤點選與移除機制)
 @app.route('/edit/<int:project_id>', methods=['GET', 'POST'])
 def edit_project(project_id):
     user = session.get('user')
@@ -558,7 +557,6 @@ def edit_project(project_id):
     guild_members = fetch_guild_members_from_sheet()
     members_json = json.dumps(guild_members, ensure_ascii=False)
     
-    # 取得原本已選的成員名單
     existing_members = [m.strip() for m in proj[4].replace('，', ',').split(',') if m.strip()]
     existing_members_json = json.dumps(existing_members, ensure_ascii=False)
 
@@ -601,7 +599,6 @@ def edit_project(project_id):
 
     conn.close()
     
-    # 升級版的編輯頁面模板（完美整合智慧標籤選擇器）
     EDIT_TEMPLATE = """
     <!DOCTYPE html>
     <html>
@@ -813,8 +810,8 @@ def toggle_status(record_id):
     
     if row:
         member_name, current_status = row
-        is_admin = user.get('id'] in ADMIN_DISCORD_IDS
-        if is_admin or user.get('username'] == member_name or user.get('global_name') == member_name:
+        is_admin = user.get('id') in ADMIN_DISCORD_IDS
+        if is_admin or user.get('username') == member_name or user.get('global_name') == member_name:
             new_status = 0 if current_status == 1 else 1
             cursor.execute("UPDATE split_records SET status = ? WHERE id = ?", (new_status, record_id))
             conn.commit()
