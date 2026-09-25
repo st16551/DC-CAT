@@ -16,7 +16,107 @@ TARGET_WORKSHEET_NAME = "未活躍清單"
 
 def get_gspread_client():
     scopes = ["https://www.googleapis.com/auth/spreadsheets"]
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))from datetime import datetime, timedelta
+import io
+import discord
+from discord import app_commands
+from discord.ext import commands
+
+# 引入共用的資料庫連線或資料變數
+from utils.database import get_DB_connection, DB_FILE
+
+
+class InactiveCheckCog(commands.Cog):
+
+    def __init__(self, bot):
+        self.bot = bot
+
+    @app_commands.command(
+        name="檢查未活躍",
+        description="【管理員】查看並一鍵導出超過指定天數未在 Discord 活躍的成員清單 (TXT)",
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def check_inactive_members(
+        self, interaction: discord.Interaction, 天數: int = 14
+    ):
+        # 預先回覆訊息，避免處理時間過長導致互動逾時
+        await interaction.response.defer(ephemeral=True)
+
+        guild = interaction.guild
+        now = datetime.now()
+
+        # 從資料庫撈取所有成員的最後活躍時間
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT discord_id, last_active FROM users")
+        user_records = {
+            row["discord_id"]: row["last_active"] for row in cursor.fetchall()
+        }
+        conn.close()
+
+        inactive_list = []
+
+        for member in guild.members:
+            # 略過機器人帳號
+            if member.bot:
+                continue
+
+            last_active_str = user_records.get(member.id)
+            is_inactive = False
+            days_diff_text = "從未互動"
+
+            if last_active_str:
+                try:
+                    last_active_dt = datetime.strptime(
+                        last_active_str, "%Y-%m-%d %H:%M:%S"
+                    )
+                    days_diff = (now - last_active_dt).days
+                    if days_diff >= 天數:
+                        is_inactive = True
+                        days_diff_text = f"超過 {days_diff} 天"
+                except Exception:
+                    is_inactive = True
+                    days_diff_text = "日期解析異常"
+            else:
+                # 資料庫中完全沒有紀錄者
+                is_inactive = True
+                days_diff_text = "從未互動"
+
+            if is_inactive:
+                inactive_list.append(
+                    f"• 帳號：{member.name} | 暱稱：{member.display_name} (ID: {member.id}) — 最後活躍：{days_diff_text}"
+                )
+
+        # 組合匯出內容
+        if not inactive_list:
+            await interaction.followup.send(
+                f"🎉 太棒了！伺服器內沒有超過 {天數} 天未活躍的成員。",
+                ephemeral=True,
+            )
+            return
+
+        file_content = (
+            f"=== {guild.name} 超過 {days} 天未在 DC 活躍的成員清單 ===\n"
+            f"檢查時間：{now.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"符合條件總人數：{len(inactive_list)} 人\n"
+            f"==================================================\n\n"
+            + "\n".join(inactive_list)
+        )
+
+        file = discord.File(
+            fp=io.BytesIO(file_content.encode("utf-8-sig")),
+            filename=f"inactive_members_{天數}days.txt",
+        )
+
+        await interaction.followup.send(
+            f"⚠️ **已成功產生成員清單！** 超過 {天數} 天未在 DC 活躍的成員共 **{len(inactive_list)}** 人，檔案已附在下方：",
+            file=file,
+            ephemeral=True,
+        )
+
+
+async def setup(bot):
+    await bot.add_cog(InactiveCheckCog(bot))
     creds_path = os.path.join(base_dir, CREDENTIALS_FILE)
     creds = Credentials.from_service_account_file(creds_path, scopes=scopes)
     return gspread.authorize(creds)
