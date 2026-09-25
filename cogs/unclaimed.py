@@ -360,6 +360,7 @@ def callback():
 def logout():
     session.clear()
     return redirect(url_for('index'))
-
+async def setup(bot):
+    await bot.add_cog(Unclaimed(bot))  # 請確認括號裡的類別名稱是否為 Unclaimed
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
