@@ -282,9 +282,12 @@ def generate_calendar_text(guild):
         except Exception:
             pass
 
-    cal_str = f"```text\n     {year} 年 {month} 月行事曆\n"
-    cal_str += "日   一   二   三   四   五   六\n"
-    cal_str += "---------------------------------\n"
+    cal_lines = [
+        f"```text",
+        f"     {year} 年 {month} 月行事曆",
+        f"日   一   二   三   四   五   六",
+        f"---------------------------------"
+    ]
 
     first_day = datetime(year, month, 1)
     start_weekday = first_day.weekday()
@@ -308,13 +311,14 @@ def generate_calendar_text(guild):
             current_week += f"{day_str}   "
 
         if len(current_week) >= 35 or (start_weekday + day) % 7 == 0:
-            cal_str += current_week + "\n"
+            cal_lines.append(current_week)
             current_week = ""
 
     if current_week:
-        cal_str += current_week + "\n"
-    cal_str += "```"
+        cal_lines.append(current_week)
+    cal_lines.append("```")
 
+    cal_str = "\n".join(cal_lines)
     cal_str += "\n**📌 當月請假名單對照：**\n"
     if not leave_days:
         cal_str += "• 本月目前沒有成員請假。\n"
