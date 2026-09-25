@@ -1,3 +1,5 @@
+import random
+import re
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
@@ -11,7 +13,7 @@ BLACK_MARKET_ITEMS = {
         "price": 350,
         "hours": 0,  # 立即性消耗道具，無持續時間
         "type": "broadcast",
-        "description": "向全群廣播你的重要訊息（約 1 週產出）"
+        "description": "向當前頻道廣播你的重要訊息"
     },
     "rename_card": {
         "name": "強制改名卡",
@@ -45,17 +47,15 @@ class TargetDebuffModal(discord.ui.Modal):
         self.item_name = item_name
         self.hours = hours
 
-        # 依照道具類型建立對應的輸入框，確保「受害者」與「新名稱」皆正確加入
         if debuff_type == "broadcast":
             self.target_name = discord.ui.TextInput(
                 label="廣播內容訊息",
-                placeholder="請輸入你想向全群廣播公告的內容...",
+                placeholder="請輸入你想廣播公告的內容...",
                 style=discord.TextStyle.paragraph,
                 max_length=300,
             )
             self.add_item(self.target_name)
         else:
-            # 第一個欄位：受害者
             self.target_name = discord.ui.TextInput(
                 label="受害者名字、ID 或 @標註",
                 placeholder="例如: 小明 或 123456789 或 @小明",
@@ -63,7 +63,6 @@ class TargetDebuffModal(discord.ui.Modal):
             )
             self.add_item(self.target_name)
 
-            # 如果是強制改名卡，額外加入第二個欄位：新名稱
             if debuff_type == "rename":
                 self.new_nickname = discord.ui.TextInput(
                     label="強制改為的新名稱",
@@ -98,12 +97,12 @@ class TargetDebuffModal(discord.ui.Modal):
             target_channel = interaction.channel
             if target_channel:
                 await target_channel.send(
-                    f"📢 **【黑市大聲公 / 全群廣播】**\n"
+                    f"📢 **【黑市大聲公】**\n"
                     f"來自 {interaction.user.mention} 的重金宣告：\n> {broadcast_content}"
                 )
             return
 
-        # 解析並尋找目標成員（支援 @Mention、ID、名稱模糊搜尋）
+        # 解析並尋找目標成員
         target_str = self.target_name.value.strip()
         target_member = None
 
@@ -124,7 +123,6 @@ class TargetDebuffModal(discord.ui.Modal):
                 except Exception:
                     pass
 
-        # 如果透過 ID 找不到，嘗試用名稱比對
         if not target_member:
             for m in guild.members:
                 if (target_str.lower() in m.name.lower() or 
@@ -159,7 +157,7 @@ class TargetDebuffModal(discord.ui.Modal):
             try:
                 await target_member.edit(nick=new_nick, reason=f"黑市強制改名卡由 {interaction.user} 購買施放")
             except discord.Forbidden:
-                await interaction.followup.send("❌ 機器人權限不足，無法變更該成員的伺服器暱稱（請確認機器人身分組高於對方，且擁有管理暱稱權限）！已全額退款。", ephemeral=True)
+                await interaction.followup.send("❌ 機器人權限不足或身分組低於對方，無法改名！已全額退款。", ephemeral=True)
                 modify_balance(user_id, self.cost, tx_type="refund_rename_fail", sender_id="BLACK_MARKET")
                 return
             except discord.HTTPException as e:
@@ -167,7 +165,7 @@ class TargetDebuffModal(discord.ui.Modal):
                 modify_balance(user_id, self.cost, tx_type="refund_rename_fail", sender_id="BLACK_MARKET")
                 return
 
-        # 3. 記錄詛咒狀態到 SQLite 資料庫中（支援重啟不遺失）
+        # 3. 記錄詛咒狀態到 SQLite 資料庫中
         key = f"{guild.id}_{target_member.id}"
         expire_at_str = (datetime.now() + timedelta(hours=self.hours)).isoformat()
 
@@ -185,10 +183,8 @@ class TargetDebuffModal(discord.ui.Modal):
                 f"🎯 施法成功！已將 **{old_nick}** 強制改名為 **{new_nick}**，持續 {self.hours} 小時！已扣除 `{self.cost} SU幣`。",
                 ephemeral=True,
             )
-            if guild.system_channel:
-                await guild.system_channel.send(
-                    f"🔀 **【黑市整人】** {interaction.user.mention} 對 **{old_nick}** 使用了 **強制改名卡**！"
-                )
+            if interaction.channel:
+                await interaction.channel.send(f"🔀 **【黑市整人】** {interaction.user.mention} 對 **{old_nick}** 使用了 **強制改名卡**！")
             return
 
         await interaction.followup.send(
@@ -196,10 +192,8 @@ class TargetDebuffModal(discord.ui.Modal):
             ephemeral=True,
         )
         
-        if guild.system_channel:
-            await guild.system_channel.send(
-                f"🔮 **【黑市詛咒】** {interaction.user.mention} 成功對 **{target_member.display_name}** 施展了 **{self.item_name}**！"
-            )
+        if interaction.channel:
+            await interaction.channel.send(f"🔮 **【黑市詛咒】** {interaction.user.mention} 成功對 **{target_member.display_name}** 施展了 **{self.item_name}**！")
 
 class BlackMarketSelect(discord.ui.Select):
     def __init__(self):
@@ -226,7 +220,6 @@ class BlackMarketSelect(discord.ui.Select):
             )
             return
 
-        # 彈出對應的 Modal 視窗
         await interaction.response.send_modal(
             TargetDebuffModal(
                 cost=item["price"], 
@@ -244,12 +237,31 @@ class BlackMarketView(discord.ui.View):
 class BlackMarketCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self.webhook_cache = {}
         self.check_debuffs_task.start()
 
     def cog_unload(self):
         self.check_debuffs_task.cancel()
 
-    # 背景任務：每分鐘檢查一次過期的改名與詛咒並自動還原
+    async def get_or_create_webhook(self, channel):
+        if channel.id in self.webhook_cache:
+            webhook = self.webhook_cache[channel.id]
+            try:
+                if webhook and webhook.channel.id == channel.id:
+                    return webhook
+            except Exception:
+                pass
+        try:
+            webhooks = await channel.webhooks()
+            webhook = discord.utils.get(webhooks, name="BlackMarketProxy")
+            if not webhook:
+                webhook = await channel.create_webhook(name="BlackMarketProxy")
+            self.webhook_cache[channel.id] = webhook
+            return webhook
+        except Exception:
+            return None
+
+    # 背景任務：每分鐘檢查過期狀態並自動還原
     @tasks.loop(minutes=1)
     async def check_debuffs_task(self):
         now = datetime.now()
@@ -258,7 +270,6 @@ class BlackMarketCog(commands.Cog):
 
         cursor.execute("SELECT id, guild_id, user_id, type, old_nickname, expire_at FROM active_debuffs")
         rows = cursor.fetchall()
-        
         expired_ids = []
 
         for row in rows:
@@ -290,7 +301,7 @@ class BlackMarketCog(commands.Cog):
                     except Exception:
                         pass
                 else:
-                    if guild.system_channel:
+                    if guild.system_channel and member:
                         await guild.system_channel.send(f"⏳ **【黑市解除】** **{member.display_name}** 身上的黑市詛咒已自然解除。")
 
         if expired_ids:
@@ -303,11 +314,72 @@ class BlackMarketCog(commands.Cog):
     async def before_check_debuffs(self):
         await self.bot.wait_until_ready()
 
+    # 監聽被施加詛咒者的發言（倒裝句、馬賽克）
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        if message.author.bot or not message.guild:
+            return
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT type, expire_at FROM active_debuffs WHERE guild_id = ? AND user_id = ?", (message.guild.id, message.author.id))
+        row = cursor.fetchone()
+        conn.close()
+
+        if not row:
+            return
+
+        debuff_type = row["type"]
+        expire_at = datetime.fromisoformat(row["expire_at"])
+
+        if datetime.now() >= expire_at:
+            return  # 時間到了由背景任務清理
+
+        if debuff_type not in ["reverse", "mosaic"]:
+            return
+
+        content = message.content
+        if not content:
+            return
+
+        # 處理詛咒轉換效果
+        if debuff_type == "reverse":
+            # 倒裝句處理
+            content = content[::-1]
+        elif debuff_type == "mosaic":
+            # 隨機馬賽克處理
+            chars = list(content)
+            for i in range(len(chars)):
+                if chars[i].strip() and random.random() < 0.4:
+                    chars[i] = "█"
+            content = "".join(chars)
+
+        try:
+            await message.delete()
+        except Exception:
+            return
+
+        webhook = await self.get_or_create_webhook(message.channel)
+        if not webhook:
+            return
+
+        avatar_url = message.author.avatar.url if message.author.avatar else message.author.default_avatar.url
+        display_name = message.author.display_name
+
+        try:
+            await webhook.send(
+                content=content,
+                username=display_name,
+                avatar_url=avatar_url,
+            )
+        except Exception:
+            pass
+
     @app_commands.command(name="黑市", description="開啟地下黑市，購買整人與詛咒道具")
     async def black_market(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title="🏴‍☠️ 地下黑市道具坊",
-            description="歡迎來到見不得光的黑市！這裡的道具可以對其他人施加惡整詛咒或發布全群廣播。\n購買時將直接從你的 **SU 幣錢包** 中扣款，請謹慎使用！",
+            description="歡迎來到見不得光的黑市！這裡的道具可以對其他人施加惡整詛咒或發布廣播。\n購買時將直接從你的 **SU 幣錢包** 中扣款，請謹慎使用！",
             color=0x2b2d31
         )
         embed.add_field(
@@ -330,7 +402,6 @@ class BlackMarketCog(commands.Cog):
         
         conn = get_db_connection()
         cursor = conn.cursor()
-        
         cursor.execute("SELECT type, old_nickname, expire_at FROM active_debuffs WHERE guild_id = ? AND user_id = ?", (guild.id, user.id))
         row = cursor.fetchone()
         conn.close()
