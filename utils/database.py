@@ -1,6 +1,6 @@
 # ==================================================
 # 檔案名稱：utils/database.py
-# 檔案用途：SQLite 資料庫核心初始化與連線管理（絕對路徑防護版）
+# 檔案用途：SQLite 資料庫核心初始化與連線管理（全欄位自動防護版）
 # ==================================================
 
 import json
@@ -24,21 +24,27 @@ def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # 1. 會員與活躍度表（已補上 message_count 欄位）
+    # 1. 會員與活躍度表
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             discord_id INTEGER PRIMARY KEY,
-            joined_id TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            message_count INTEGER DEFAULT 0
+            message_count INTEGER DEFAULT 0,
+            voice_seconds INTEGER DEFAULT 0
         )
     """)
 
-    # 🛡️ 自動防護：如果舊資料庫的 users 表已經存在但沒有 message_count 欄位，自動補上
-    try:
-        cursor.execute("SELECT message_count FROM users LIMIT 1")
-    except sqlite3.OperationalError:
-        cursor.execute("ALTER TABLE users ADD COLUMN message_count INTEGER DEFAULT 0")
+    # 🛡️ 自動防護：確保舊資料庫的 users 表擁有所有必要欄位
+    columns_to_check = {
+        "message_count": "INTEGER DEFAULT 0",
+        "voice_seconds": "INTEGER DEFAULT 0"
+    }
+    for col_name, col_type in columns_to_check.items():
+        try:
+            cursor.execute(f"SELECT {col_name} FROM users LIMIT 1")
+        except sqlite3.OperationalError:
+            cursor.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_type}")
 
     # 2. 遊戲角色表
     cursor.execute("""
@@ -90,7 +96,7 @@ def init_db():
         )
     """)
 
-    # 6. 會員成長數據與資產表（確保舊資料欄位完整）
+    # 6. 會員成長數據與資產表
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS member_levels (
             discord_id INTEGER PRIMARY KEY,
@@ -102,7 +108,8 @@ def init_db():
             max_exp INTEGER DEFAULT 100
         )
     """)
-    # 7. 黑市活躍詛咒與狀態表（支援機器人重啟不遺失）
+    
+    # 7. 黑市活躍詛咒與狀態表
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS active_debuffs (
             id TEXT PRIMARY KEY,
@@ -113,7 +120,8 @@ def init_db():
             expire_at TEXT
         )
     """)
-    # 8. 抽獎活動表（支援機器人重啟與持久化）
+    
+    # 8. 抽獎活動表
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS giveaways (
             message_id INTEGER PRIMARY KEY,
@@ -125,6 +133,7 @@ def init_db():
             ended INTEGER DEFAULT 0
         )
     """)
+    
     conn.commit()
     conn.close()
 
