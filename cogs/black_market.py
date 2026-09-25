@@ -244,7 +244,7 @@ class TargetDebuffModal(discord.ui.Modal):
 class BlackMarketButtonView(discord.ui.View):
 
   def __init__(self):
-    super().__init__(timeout=180)  # 設定 3 分鐘超時，避免 Interaction 失效
+    super().__init__(timeout=180)
 
   @discord.ui.button(
       label="📢 全群廣播 (350)",
@@ -380,9 +380,7 @@ class BlackMarketCog(commands.Cog):
       name="黑市", description="開啟地下黑市，購買整人與詛咒道具"
   )
   async def black_market(self, interaction: discord.Interaction):
-    # ⚡ 絕對第一行執行 defer，防止任何 3 秒逾時報錯
-    await interaction.response.defer(ephemeral=True)
-
+    # ⚡ 移除容易衝突的 defer，直接以最快速度回應 send_message
     embed = discord.Embed(
         title="🏴‍☠️ 地下黑市道具坊",
         description=(
@@ -392,7 +390,7 @@ class BlackMarketCog(commands.Cog):
         color=0x2b2d31,
     )
     view = BlackMarketButtonView()
-    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
 async def setup(bot):
