@@ -56,7 +56,7 @@ HTML_TEMPLATE = """
             </div>
         </div>
         
-        <div class="notice">✨ <b>規則說明：</b>任何人皆可自由檢視總表。成員僅能修改「自己的名字」之領取狀態；幹部可修改所有人。</div>
+        <div class="notice">✨ <b>規則說明：</b>任何人皆可自由檢視總表。成員僅能修改「自己的名字」之領取狀態；幹部可修改所有人。(畫面每 3 秒自動同步)</div>
         
         {% if user %}
         <div class="filter-bar">
@@ -71,52 +71,75 @@ HTML_TEMPLATE = """
         </div>
         {% endif %}
 
-        <table>
-            <tr>
-                <th>編號</th>
-                <th>成員名稱</th>
-                <th>品項名稱</th>
-                <th>每人分得金額</th>
-                <th>發起團長</th>
-                <th>目前狀態</th>
-                <th>操作</th>
-            </tr>
-            {% for row in records %}
-            <tr>
-                <td>{{ row[0] }}</td>
-                <td><b>{{ row[1] }}</b></td>
-                <td>{{ row[2] }}</td>
-                <td>{{ row[3] }}</td>
-                <td>{{ row[4] }}</td>
-                <td>
-                    {% if row[5] == 1 %}
-                        <span class="status-1">已領取</span>
-                    {% else %}
-                        <span class="status-0">未領取</span>
-                    {% endif %}
-                </td>
-                <td>
-                    {% if user %}
-                        {# 判斷權限：如果是幹部，或者是本人（名字相同），才允許點擊修改 #}
-                        {% if is_admin or user.username == row[1] or user.global_name == row[1] %}
-                            <form action="/toggle/{{ row[0] }}" method="post" style="margin:0;">
-                                {% if row[5] == 1 %}
-                                    <button type="submit" class="btn btn-secondary">改為未領</button>
-                                {% else %}
-                                    <button type="submit" class="btn">設為已領</button>
-                                {% endif %}
-                            </form>
+        <div id="table-container">
+            <table>
+                <tr>
+                    <th>編號</th>
+                    <th>成員名稱</th>
+                    <th>品項名稱</th>
+                    <th>每人分得金額</th>
+                    <th>發起團長</th>
+                    <th>目前狀態</th>
+                    <th>操作</th>
+                </tr>
+                {% for row in records %}
+                <tr>
+                    <td>{{ row[0] }}</td>
+                    <td><b>{{ row[1] }}</b></td>
+                    <td>{{ row[2] }}</td>
+                    <td>{{ row[3] }}</td>
+                    <td>{{ row[4] }}</td>
+                    <td>
+                        {% if row[5] == 1 %}
+                            <span class="status-1">已領取</span>
                         {% else %}
-                            <button class="btn btn-disabled" disabled title="您只能修改自己的狀態">非本人</button>
+                            <span class="status-0">未領取</span>
                         {% endif %}
-                    {% else %}
-                        <a href="/login" class="btn btn-discord" style="padding: 4px 8px; font-size: 12px;">登入後修改</a>
-                    {% endif %}
-                </td>
-            </tr>
-            {% endfor %}
-        </table>
+                    </td>
+                    <td>
+                        {% if user %}
+                            {# 判斷權限：如果是幹部，或者是本人（名字相同），才允許點擊修改 #}
+                            {% if is_admin or user.username == row[1] or user.global_name == row[1] %}
+                                <form action="/toggle/{{ row[0] }}" method="post" style="margin:0;">
+                                    {% if row[5] == 1 %}
+                                        <button type="submit" class="btn btn-secondary">改為未領</button>
+                                    {% else %}
+                                        <button type="submit" class="btn">設為已領</button>
+                                    {% endif %}
+                                </form>
+                            {% else %}
+                                <button class="btn btn-disabled" disabled title="您只能修改自己的狀態">非本人</button>
+                            {% endif %}
+                        {% else %}
+                            <a href="/login" class="btn btn-discord" style="padding: 4px 8px; font-size: 12px;">登入後修改</a>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </table>
+        </div>
     </div>
+
+    <script>
+        // 每 3 秒自動在背景局部更新表格，不會影響畫面的捲動或點擊
+        setInterval(function() {
+            if (document.activeElement && document.activeElement.tagName === 'BUTTON') {
+                return; // 如果使用者正在按按鈕，暫停更新避免干擾
+            }
+            
+            fetch(window.location.href)
+                .then(response => response.text())
+                .then(html => {
+                    var parser = new DOMParser();
+                    var doc = parser.parseFromString(html, 'text/html');
+                    var newTable = doc.querySelector('#table-container');
+                    if (newTable) {
+                        document.querySelector('#table-container').innerHTML = newTable.innerHTML;
+                    }
+                })
+                .catch(err => console.log('背景同步中...', err));
+        }, 3000);
+    </script>
 </body>
 </html>
 """
