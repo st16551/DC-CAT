@@ -8,10 +8,9 @@ app.secret_key = "my_guild_secret_key_abcxyz888_666"  # 隨機密鑰
 # ==================== 🛠️ 請在這裡填入你的 Discord 設定 ====================
 CLIENT_ID = "1549954226937929778"
 CLIENT_SECRET = "Mh4hq0GCl5oWSjzHEIPQgKnIw7eddvjg"
-REDIRECT_URI = "https://dc-cat.onrender.com"
+REDIRECT_URI = "https://dc-cat.onrender.com/callback"
 
 # 幹部的 Discord ID 清單（擁有最高權限，可以修改任何人狀態）
-# 範例: ["123456789012345678", "987654321098765432"]
 ADMIN_DISCORD_IDS = [
     "407651643836858388",
 ]
@@ -40,6 +39,7 @@ HTML_TEMPLATE = """
         .btn-discord { background: #5865F2; }
         .btn-disabled { background: #ccc; cursor: not-allowed; }
         .notice { background: #e2f0d9; padding: 10px; border-radius: 4px; margin-bottom: 15px; color: #385723; }
+        .filter-bar { margin-bottom: 15px; }
     </style>
 </head>
 <body>
@@ -58,6 +58,19 @@ HTML_TEMPLATE = """
         
         <div class="notice">✨ <b>規則說明：</b>任何人皆可自由檢視總表。成員僅能修改「自己的名字」之領取狀態；幹部可修改所有人。</div>
         
+        {% if user %}
+        <div class="filter-bar">
+            顯示模式：
+            {% if filter_mode == 'mine' %}
+                <a href="/?filter=all" class="btn btn-secondary" style="padding: 4px 10px; font-size: 13px;">顯示全部成員</a>
+                <a href="/?filter=mine" class="btn" style="padding: 4px 10px; font-size: 13px;">只顯示我的紀錄</a>
+            {% else %}
+                <a href="/?filter=all" class="btn" style="padding: 4px 10px; font-size: 13px;">顯示全部成員</a>
+                <a href="/?filter=mine" class="btn btn-secondary" style="padding: 4px 10px; font-size: 13px;">只顯示我的紀錄</a>
+            {% endif %}
+        </div>
+        {% endif %}
+
         <table>
             <tr>
                 <th>編號</th>
@@ -108,7 +121,7 @@ HTML_TEMPLATE = """
 </html>
 """
 
-# 1. 首頁（公開檢視）
+# 1. 首頁（公開檢視，支援篩選全部或個人）
 @app.route('/')
 def dashboard():
     user = session.get('user')
@@ -116,13 +129,26 @@ def dashboard():
     if user and user.get('id') in ADMIN_DISCORD_IDS:
         is_admin = True
         
+    filter_mode = request.args.get('filter', 'all')
+    
     conn = sqlite3.connect("guild_database.db")
     cursor = conn.cursor()
-    cursor.execute("SELECT id, member_name, item_name, total_per_person, leader_name, status FROM split_records ORDER BY id DESC")
+    
+    if filter_mode == 'mine' and user:
+        # 如果切換成只看自己，用 username 或 global_name 進行篩選
+        username = user.get('username')
+        global_name = user.get('global_name')
+        cursor.execute(
+            "SELECT id, member_name, item_name, total_per_person, leader_name, status FROM split_records WHERE member_name = ? OR member_name = ? ORDER BY id DESC",
+            (username, global_name)
+        )
+    else:
+        cursor.execute("SELECT id, member_name, item_name, total_per_person, leader_name, status FROM split_records ORDER BY id DESC")
+        
     records = cursor.fetchall()
     conn.close()
     
-    return render_template_string(HTML_TEMPLATE, records=records, user=user, is_admin=is_admin)
+    return render_template_string(HTML_TEMPLATE, records=records, user=user, is_admin=is_admin, filter_mode=filter_mode)
 
 # 2. 導向 Discord 登入畫面
 @app.route('/login')
