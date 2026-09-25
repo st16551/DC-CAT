@@ -19,7 +19,6 @@ ADMIN_DISCORD_IDS = [
 def init_db():
     conn = sqlite3.connect("guild_database.db")
     cursor = conn.cursor()
-    # 建立打寶/分錢專案主表
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS loot_projects (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -32,7 +31,6 @@ def init_db():
             status TEXT DEFAULT 'pending'
         )
     ''')
-    # 建立個人領取狀態表
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS split_records (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -50,7 +48,7 @@ def init_db():
 
 init_db()
 
-# 網頁前端 HTML 模板
+# 全新設計的儀表板 HTML 模板 (採用側邊欄與統計卡片風格)
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
@@ -59,54 +57,161 @@ HTML_TEMPLATE = """
     <title>SpiritVale 戰利品管理系統</title>
     <style>
         :root {
-            --bg-color: #0b0f19;
-            --panel-bg: #131c2e;
-            --panel-border: #1e293b;
-            --text-main: #f1f5f9;
+            --bg-body: #07090e;
+            --bg-sidebar: #0e1320;
+            --bg-card: #131b2e;
+            --border-color: #1e293b;
+            --text-main: #f8fafc;
             --text-muted: #94a3b8;
             --accent-gold: #f59e0b;
             --accent-blue: #3b82f6;
             --accent-green: #10b981;
             --danger-red: #ef4444;
         }
+        * { box-sizing: border-box; }
         body { 
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; 
-            background-color: var(--bg-color); 
+            background-color: var(--bg-body); 
             margin: 0; 
-            padding: 30px; 
             color: var(--text-main); 
+            display: flex;
+            min-height: 100vh;
         }
-        .container { 
-            max-width: 1150px; 
-            margin: auto; 
-            background: var(--panel-bg); 
-            padding: 35px; 
-            border-radius: 16px; 
-            box-shadow: 0 10px 30px rgba(0,0,0,0.5); 
-            border: 1px solid rgba(245, 158, 11, 0.2); 
+        
+        /* 側邊欄導航 */
+        .sidebar {
+            width: 260px;
+            background-color: var(--bg-sidebar);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            padding: 24px;
+            justify-content: space-between;
         }
-        .header { 
-            display: flex; 
-            justify-content: space-between; 
-            align-items: center; 
-            border-bottom: 1px solid var(--panel-border); 
-            padding-bottom: 20px; 
-            margin-bottom: 25px; 
-        }
-        h2 { 
-            margin: 0; 
-            color: var(--accent-gold); 
-            font-size: 22px; 
-            letter-spacing: 0.5px;
+        .brand {
+            font-size: 18px;
+            font-weight: 800;
+            color: var(--accent-gold);
             display: flex;
             align-items: center;
             gap: 10px;
+            margin-bottom: 40px;
+            letter-spacing: 0.5px;
         }
-        .user-bar { display: flex; align-items: center; gap: 12px; font-size: 14px; color: var(--text-muted); }
-        .user-bar b { color: var(--text-main); }
+        .nav-menu {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            flex-grow: 1;
+        }
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 16px;
+            border-radius: 10px;
+            text-decoration: none;
+            color: var(--text-muted);
+            font-weight: 600;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+        .nav-item:hover {
+            color: var(--text-main);
+            background: rgba(255, 255, 255, 0.03);
+        }
+        .nav-item.active {
+            color: white;
+            background: linear-gradient(135deg, #2563eb, #1d4ed8);
+            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);
+        }
+        
+        .user-panel {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid var(--border-color);
+            padding: 15px;
+            border-radius: 12px;
+            font-size: 13px;
+        }
+        .user-info { margin-bottom: 10px; color: var(--text-muted); word-break: break-all; }
+        .user-info b { color: var(--text-main); }
+        
+        /* 主內容區 */
+        .main-content {
+            flex-grow: 1;
+            padding: 40px;
+            overflow-y: auto;
+            max-width: calc(100vw - 260px);
+        }
+        .top-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+        }
+        .top-bar h1 {
+            margin: 0;
+            font-size: 24px;
+            font-weight: 700;
+        }
+        
+        /* 數據統計方塊 */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .stat-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        .stat-label { font-size: 13px; color: var(--text-muted); font-weight: 600; }
+        .stat-value { font-size: 22px; font-weight: 700; color: var(--accent-gold); }
+        
+        /* 卡片與表單容器 */
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 14px;
+            padding: 25px;
+            margin-bottom: 25px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+        }
+        .card h3 {
+            margin-top: 0;
+            font-size: 16px;
+            color: var(--text-main);
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .form-group { display: flex; flex-direction: column; gap: 8px; }
+        .form-group.full { grid-column: span 2; }
+        label { font-weight: 600; font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+        
+        input, textarea, select { 
+            padding: 12px 14px; 
+            background: #0b101d; 
+            border: 1px solid var(--border-color); 
+            border-radius: 8px; 
+            color: white; 
+            font-size: 14px; 
+            outline: none;
+            transition: all 0.2s;
+        }
+        input:focus, textarea:focus { border-color: var(--accent-gold); box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.15); }
         
         .btn { 
-            padding: 9px 18px; 
+            padding: 10px 20px; 
             text-decoration: none; 
             border-radius: 8px; 
             background: linear-gradient(135deg, #059669, #047857); 
@@ -117,154 +222,88 @@ HTML_TEMPLATE = """
             font-weight: 600; 
             transition: all 0.2s; 
             box-shadow: 0 4px 12px rgba(5, 150, 105, 0.3);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
         }
         .btn:hover { transform: translateY(-1px); filter: brightness(1.1); }
         .btn-secondary { background: #334155; box-shadow: none; }
         .btn-secondary:hover { background: #475569; }
-        .btn-discord { background: #5865F2; box-shadow: 0 4px 12px rgba(88, 101, 242, 0.3); }
+        .btn-discord { background: #5865F2; box-shadow: 0 4px 12px rgba(88, 101, 242, 0.3); width: 100%; }
         .btn-discord:hover { background: #4752c4; }
         
-        .nav-tabs { display: flex; gap: 12px; margin-bottom: 30px; }
-        .nav-tab { 
-            padding: 10px 20px; 
-            border-radius: 8px; 
-            text-decoration: none; 
-            color: var(--text-muted); 
-            background: #0f172a; 
-            font-weight: 600; 
-            font-size: 14px;
-            border: 1px solid var(--panel-border);
-            transition: all 0.2s;
-        }
-        .nav-tab:hover { color: var(--text-main); border-color: #475569; }
-        .nav-tab.active { 
-            background: linear-gradient(135deg, #2563eb, #1d4ed8); 
-            color: white; 
-            border-color: transparent;
-            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4);
-        }
+        /* 表格樣式 */
+        table { width: 100%; border-collapse: collapse; margin-top: 5px; }
+        th, td { padding: 14px 16px; border-bottom: 1px solid var(--border-color); text-align: left; font-size: 14px; }
+        th { background-color: #0b101d; color: var(--text-muted); font-weight: 600; }
+        tr:hover td { background-color: rgba(255, 255, 255, 0.01); }
         
-        .card { 
-            background: #0f172a; 
-            border: 1px solid var(--panel-border); 
-            border-radius: 12px; 
-            padding: 25px; 
-            margin-bottom: 25px; 
-        }
-        .card h3 { margin-top: 0; color: #f8fafc; font-size: 18px; margin-bottom: 20px; border-left: 4px solid var(--accent-gold); padding-left: 10px; }
-        
-        .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
-        .form-group { display: flex; flex-direction: column; gap: 8px; }
-        .form-group.full { grid-column: span 2; }
-        label { font-weight: 600; font-size: 13px; color: var(--text-muted); }
-        
-        input, textarea, select { 
-            padding: 12px; 
-            background: #1e293b; 
-            border: 1px solid #334155; 
-            border-radius: 8px; 
-            color: white; 
-            font-size: 14px; 
-            outline: none;
-            transition: border-color 0.2s;
-        }
-        input:focus, textarea:focus { border-color: var(--accent-gold); }
-        
-        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-        th, td { padding: 14px; border-bottom: 1px solid var(--panel-border); text-align: left; font-size: 14px; }
-        th { background-color: #162032; color: var(--text-muted); font-weight: 600; }
-        tr:hover td { background-color: rgba(255, 255, 255, 0.02); }
-        
-        .status-tag { padding: 5px 10px; border-radius: 6px; font-size: 12px; font-weight: bold; }
-        .status-0 { background: rgba(239, 68, 68, 0.15); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.3); }
-        .status-1 { background: rgba(16, 185, 129, 0.15); color: #6ee7b7; border: 1px solid rgba(16, 185, 129, 0.3); }
+        .status-badge { padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; display: inline-block; }
+        .status-unpaid { background: rgba(239, 68, 68, 0.1); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.2); }
+        .status-paid { background: rgba(16, 185, 129, 0.1); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.2); }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <h2>🛡️ SpiritVale 戰利品管理系統</h2>
-            <div class="user-bar">
-                {% if user %}
-                    <span>👤 <b>{{ user.username }}</b> {% if is_admin %}<span style="color:var(--accent-gold);">(幹部)</span>{% endif %}</span>
-                    <a href="/logout" class="btn btn-secondary" style="padding: 6px 12px; font-size: 13px;">登出</a>
-                {% else %}
-                    <a href="/login" class="btn btn-discord">🔐 使用 Discord 登入</a>
-                {% endif %}
+    <!-- 左側導覽列 -->
+    <div class="sidebar">
+        <div>
+            <div class="brand">
+                <span>🛡️</span> SpiritVale 管理
+            </div>
+            <div class="nav-menu">
+                <a href="/?tab=dashboard" class="nav-item {% if tab == 'dashboard' %}active{% endif %}">
+                    <span>📊</span> 分錢明細總覽
+                </a>
+                <a href="/?tab=create" class="nav-item {% if tab == 'create' %}active{% endif %}">
+                    <span>➕</span> 登記打寶項目
+                </a>
+                <a href="/?tab=pending" class="nav-item {% if tab == 'pending' %}active{% endif %}">
+                    <span>⏳</span> 待售寶物庫
+                </a>
             </div>
         </div>
 
-        <div class="nav-tabs">
-            <a href="/?tab=dashboard" class="nav-tab {% if tab == 'dashboard' %}active{% endif %}">📊 分錢與未領總覽</a>
-            <a href="/?tab=create" class="nav-tab {% if tab == 'create' %}active{% endif %}">➕ 登記打寶項目</a>
-            <a href="/?tab=pending" class="nav-tab {% if tab == 'pending' %}active{% endif %}">⏳ 待售寶物庫</a>
-        </div>
-
-        {% if tab == 'create' %}
-        <div class="card">
-            <h3>登記新打寶項目</h3>
-            <form action="/create_loot" method="POST">
-                <div class="form-grid">
-                    <div class="form-group">
-                        <label>開單負責人 (你的遊戲ID)</label>
-                        <input type="text" name="leader_name" value="{{ user.username if user else '' }}" required placeholder="請輸入負責人遊戲ID">
-                    </div>
-                    <div class="form-group">
-                        <label>打寶日期</label>
-                        <input type="date" name="loot_date" value="{{ today }}" required>
-                    </div>
-                    <div class="form-group full">
-                        <label>打到的物品名稱</label>
-                        <input type="text" name="item_name" required placeholder="例如：稀有裝備、王卡、高級素材">
-                    </div>
-                    <div class="form-group full">
-                        <label>參與人員 (請用半形逗號分隔名字)</label>
-                        <textarea name="members" rows="3" required placeholder="玩家A, 玩家B, 玩家C..."></textarea>
-                    </div>
-                    <div class="form-group">
-                        <label>售出總金額 (若尚未售出可先填 0)</label>
-                        <input type="number" name="total_price" value="0" required>
-                    </div>
-                    <div class="form-group">
-                        <label>交易所手續費/抽稅 (%)</label>
-                        <input type="number" name="tax_rate" value="0" step="0.1">
-                    </div>
+        <div class="user-panel">
+            {% if user %}
+                <div class="user-info">
+                    登入身分：<br><b>{{ user.username }}</b> {% if is_admin %}<span style="color:var(--accent-gold);">(幹部)</span>{% endif %}
                 </div>
-                <button type="submit" class="btn">確認送出登記</button>
-            </form>
+                <a href="/logout" class="btn btn-secondary" style="width: 100%; padding: 8px; font-size: 13px;">登出系統</a>
+            {% else %}
+                <div class="user-info" style="margin-bottom: 12px;">尚未透過 Discord 驗證</div>
+                <a href="/login" class="btn btn-discord" style="padding: 10px; font-size: 13px;">🔐 Discord 登入</a>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- 右側主內容 -->
+    <div class="main-content">
+        <div class="top-bar">
+            <h1>
+                {% if tab == 'create' %}登記打寶項目
+                {% elif tab == 'pending' %}待售寶物庫管理
+                {% else %}分錢與領取狀態總覽{% endif %}
+            </h1>
         </div>
 
-        {% elif tab == 'pending' %}
-        <div class="card">
-            <h3>⏳ 待售寶物庫（尚未賣出）</h3>
-            <table>
-                <tr>
-                    <th>日期</th>
-                    <th>負責人</th>
-                    <th>物品名稱</th>
-                    <th>參與人數</th>
-                    <th>操作</th>
-                </tr>
-                {% for p in pending_projects %}
-                <tr>
-                    <td>{{ p[3] }}</td>
-                    <td><b>{{ p[1] }}</b></td>
-                    <td>{{ p[2] }}</td>
-                    <td>{{ p[4].split(',')|length }} 人</td>
-                    <td>
-                        <form action="/activate/{{ p[0] }}" method="POST" style="display:inline; display:flex; gap:8px; align-items:center;">
-                            <input type="number" name="sold_price" placeholder="輸入售出總金額" required style="width: 140px; padding: 8px;">
-                            <button type="submit" class="btn" style="padding: 8px 14px;">售出結算並發放</button>
-                        </form>
-                    </td>
-                </tr>
-                {% else %}
-                <tr><td colspan="5" style="text-align:center; color:var(--text-muted); padding: 30px;">目前沒有待售寶物。</td></tr>
-                {% endfor %}
-            </table>
+        {% if tab == 'dashboard' %}
+        <!-- 統計數據面板 -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <span class="stat-label">總分發紀錄筆數</span>
+                <span class="stat-value">{{ records|length }} 筆</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-label">待售寶物數量</span>
+                <span class="stat-value" style="color: var(--accent-blue);">{{ pending_count }} 件</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-label">系統連線狀態</span>
+                <span class="stat-value" style="color: var(--accent-green);">連線正常 (DB Sync)</span>
+            </div>
         </div>
 
-        {% else %}
         <div class="card">
             <h3>💰 現有分錢總覽明細</h3>
             <table>
@@ -279,16 +318,16 @@ HTML_TEMPLATE = """
                 </tr>
                 {% for row in records %}
                 <tr>
-                    <td>{{ row[0] }}</td>
+                    <td>#{{ row[0] }}</td>
                     <td><b>{{ row[1] }}</b></td>
                     <td>{{ row[2] }}</td>
-                    <td><span style="color: var(--accent-gold);">{{ "{:,}".format(row[3]|int) }}</span> 元</td>
+                    <td><span style="color: var(--accent-gold); font-weight: 600;">{{ "{:,}".format(row[3]|int) }}</span> 元</td>
                     <td>{{ row[4] }}</td>
                     <td>
                         {% if row[5] == 1 %}
-                            <span class="status-tag status-1">已領取</span>
+                            <span class="status-badge status-paid">已領取</span>
                         {% else %}
-                            <span class="status-tag status-0">未領取</span>
+                            <span class="status-badge status-unpaid">未領取</span>
                         {% endif %}
                     </td>
                     <td>
@@ -296,21 +335,87 @@ HTML_TEMPLATE = """
                             {% if is_admin or user.username == row[1] or user.global_name == row[1] %}
                                 <form action="/toggle/{{ row[0] }}" method="POST" style="margin:0;">
                                     {% if row[5] == 1 %}
-                                        <button type="submit" class="btn btn-secondary" style="padding: 5px 10px; font-size:12px;">改為未領</button>
+                                        <button type="submit" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;">改為未領</button>
                                     {% else %}
-                                        <button type="submit" class="btn" style="padding: 5px 10px; font-size:12px;">確認已領</button>
+                                        <button type="submit" class="btn" style="padding: 6px 12px; font-size: 12px;">確認已領</button>
                                     {% endif %}
                                 </form>
                             {% else %}
-                                <span style="color:var(--text-muted); font-size:12px;">非本人</span>
+                                <span style="color:var(--text-muted); font-size:12px;">僅限本人/幹部</span>
                             {% endif %}
                         {% else %}
-                            <a href="/login" class="btn btn-discord" style="padding: 5px 10px; font-size:12px;">登入修改</a>
+                            <a href="/login" class="btn btn-discord" style="padding: 6px 12px; font-size: 12px; width:auto;">登入修改</a>
                         {% endif %}
                     </td>
                 </tr>
                 {% else %}
-                <tr><td colspan="7" style="text-align:center; color:var(--text-muted); padding: 30px;">目前沒有任何分錢明細記錄。</td></tr>
+                <tr><td colspan="7" style="text-align:center; color:var(--text-muted); padding: 40px;">目前沒有任何分錢明細記錄。</td></tr>
+                {% endfor %}
+            </table>
+        </div>
+
+        {% elif tab == 'create' %}
+        <div class="card">
+            <h3>📝 填寫打寶與分紅資訊</h3>
+            <form action="/create_loot" method="POST">
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label>開單負責人 (遊戲ID)</label>
+                        <input type="text" name="leader_name" value="{{ user.username if user else '' }}" required placeholder="例如：Alex">
+                    </div>
+                    <div class="form-group">
+                        <label>打寶日期</label>
+                        <input type="date" name="loot_date" value="{{ today }}" required>
+                    </div>
+                    <div class="form-group full">
+                        <label>打到的物品名稱</label>
+                        <input type="text" name="item_name" required placeholder="例如：+10 稀有防具 / 王卡">
+                    </div>
+                    <div class="form-group full">
+                        <label>參與人員 (請用半形逗號分隔)</label>
+                        <textarea name="members" rows="4" required placeholder="玩家A, 玩家B, 玩家C..."></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label>售出總金額 (若未售出填 0 則進入待售庫)</label>
+                        <input type="number" name="total_price" value="0" required>
+                    </div>
+                    <div class="form-group">
+                        <label>交易所手續費/抽稅 (%)</label>
+                        <input type="number" name="tax_rate" value="0" step="0.1">
+                    </div>
+                </div>
+                <div style="margin-top: 25px;">
+                    <button type="submit" class="btn">🚀 確認送出並同步</button>
+                </div>
+            </form>
+        </div>
+
+        {% elif tab == 'pending' %}
+        <div class="card">
+            <h3>⏳ 待售寶物庫（尚未結算）</h3>
+            <table>
+                <tr>
+                    <th>日期</th>
+                    <th>負責人</th>
+                    <th>物品名稱</th>
+                    <th>參與人數</th>
+                    <th>快速結算操作</th>
+                </tr>
+                {% for p in pending_projects %}
+                <tr>
+                    <td>{{ p[3] }}</td>
+                    <td><b>{{ p[1] }}</b></td>
+                    <td>{{ p[2] }}</td>
+                    <td>{{ p[4].split(',')|length }} 人</td>
+                    <td>
+                        <form action="/activate/{{ p[0] }}" method="POST" style="display:flex; gap:10px; align-items:center;">
+                            <input type="number" name="sold_price" placeholder="輸入實際售出總金額" required style="width: 160px; padding: 8px;">
+                            <button type="submit" class="btn" style="padding: 8px 14px; font-size: 13px;">完成售出並分錢</button>
+                        </form>
+                    </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="5" style="text-align:center; color:var(--text-muted); padding: 40px;">目前沒有待售寶物項目。</td></tr>
                 {% endfor %}
             </table>
         </div>
@@ -332,12 +437,13 @@ def index():
 
     cursor.execute("SELECT id, leader_name, item_name, loot_date, members FROM loot_projects WHERE status = 'pending'")
     pending_projects = cursor.fetchall()
+    pending_count = len(pending_projects)
 
     cursor.execute("SELECT id, member_name, item_name, total_per_person, leader_name, status FROM split_records ORDER BY id DESC")
     records = cursor.fetchall()
     conn.close()
 
-    return render_template_string(HTML_TEMPLATE, user=user, is_admin=is_admin, tab=tab, today=today, pending_projects=pending_projects, records=records)
+    return render_template_string(HTML_TEMPLATE, user=user, is_admin=is_admin, tab=tab, today=today, pending_projects=pending_projects, pending_count=pending_count, records=records)
 
 @app.route('/create_loot', methods=['POST'])
 def create_loot():
