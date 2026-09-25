@@ -73,18 +73,17 @@ def init_db():
         )
     ''')
     
-    # 【自動升級資料庫】如果原本沒有記錄「異動摘要」的欄位，自動加上去
     try:
         cursor.execute("ALTER TABLE loot_projects ADD COLUMN edit_summary TEXT")
     except sqlite3.OperationalError:
-        pass # 如果已經有這個欄位了，就會自動跳過，不會報錯
+        pass
 
     conn.commit()
     conn.close()
 
 init_db()
 
-# 儀表板 HTML 模板 (已新增「修改紀錄」詳細內容，且已移除所有 confirm)
+# 儀表板 HTML 模板
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
@@ -281,7 +280,6 @@ HTML_TEMPLATE = """
                     <td>
                         {% if user %}
                             {% if is_admin or user.username == row[1] or user.global_name == row[1] %}
-                                <!-- 移除了 confirm，點擊直接切換 -->
                                 <form action="/toggle/{{ row[0] }}" method="POST" style="margin:0; display:inline;">
                                     {% if row[5] == 1 %}
                                         <button type="submit" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;">改為未領</button>
@@ -321,7 +319,7 @@ HTML_TEMPLATE = """
                     </div>
                     <div class="form-group full">
                         <label>打到的物品名稱</label>
-                        <input type="text" id="item_name" name="item_name" placeholder="例如：+10 稀有防具 / 王卡">
+                        <input type="text" id="item_name" name="item_name" required placeholder="例如：+10 稀有防具 / 王卡">
                     </div>
                     
                     <div class="form-group full">
@@ -409,7 +407,6 @@ HTML_TEMPLATE = """
                 renderSuggestions(query);
             }
 
-            // 移除了 confirm，直接儲存狀態並送出
             function saveFormState() {
                 const formData = {
                     item_name: document.getElementById("item_name").value,
@@ -456,7 +453,6 @@ HTML_TEMPLATE = """
                     <td>{{ p[4].split(',')|length }} 人</td>
                     <td>
                         <div style="display: flex; gap: 8px; align-items: center;">
-                            <!-- 移除了 confirm，輸入金額後直接結算 -->
                             <form action="/activate/{{ p[0] }}" method="POST" style="display:flex; gap:6px; align-items:center;">
                                 <input type="number" name="sold_price" placeholder="售出金額" required style="width: 110px; padding: 6px;">
                                 <button type="submit" class="btn" style="padding: 6px 10px; font-size: 12px;">結算</button>
@@ -490,7 +486,6 @@ HTML_TEMPLATE = """
                     <td>#{{ log[0] }}</td>
                     <td><b>{{ log[1] }}</b></td>
                     <td>{{ log[2] }}</td>
-                    <!-- 顯示詳細的修改內容 -->
                     <td class="change-summary">{{ log[10] if log[10] else "未記錄變更細節" }}</td>
                     <td><span style="color: var(--accent-gold); font-weight: 600;">{{ log[8] }}</span></td>
                     <td>{{ log[9] }}</td>
@@ -525,12 +520,10 @@ def index():
     cursor.execute("SELECT id, member_name, item_name, total_per_person, leader_name, status FROM split_records ORDER BY id DESC")
     records = cursor.fetchall()
 
-    # 撈取紀錄包含新加入的 edit_summary 欄位 (log[10])
     try:
         cursor.execute("SELECT id, leader_name, item_name, loot_date, members, total_price, tax_rate, status, updated_by, updated_at, edit_summary FROM loot_projects WHERE updated_by IS NOT NULL ORDER BY updated_at DESC")
         edit_logs = cursor.fetchall()
     except sqlite3.OperationalError:
-        # 萬一升級資料庫還沒完成，暫時給空資料避免閃退
         edit_logs = []
 
     conn.close()
@@ -539,7 +532,7 @@ def index():
 
     return render_template_string(HTML_TEMPLATE, user=user, is_admin=is_admin, tab=tab, today=today, pending_projects=pending_projects, pending_count=pending_count, records=records, edit_logs=edit_logs, members_json=members_json)
 
-# 安全防護的編輯頁面路由 (含智慧比對異動內容)
+# 升級後的編輯頁面路由 (含智慧標籤點選與移除機制)
 @app.route('/edit/<int:project_id>', methods=['GET', 'POST'])
 def edit_project(project_id):
     user = session.get('user')
@@ -562,17 +555,22 @@ def edit_project(project_id):
         conn.close()
         return "權限不足：您不是此筆打寶記錄的開單負責人或幹部，無法進行編輯！", 403
 
+    guild_members = fetch_guild_members_from_sheet()
+    members_json = json.dumps(guild_members, ensure_ascii=False)
+    
+    # 取得原本已選的成員名單
+    existing_members = [m.strip() for m in proj[4].replace('，', ',').split(',') if m.strip()]
+    existing_members_json = json.dumps(existing_members, ensure_ascii=False)
+
     if request.method == 'POST':
         item_name = request.form.get('item_name')
         members_raw = request.form.get('members', '')
         tax_rate = float(request.form.get('tax_rate', 0))
         
-        # === 核心升級：智慧比對異動內容 ===
         old_item = proj[2]
         old_tax = float(proj[6])
         
-        # 抓出舊名單與新名單並轉換成 Set 來比對差異
-        old_members_set = set([m.strip() for m in proj[4].replace('，', ',').split(',') if m.strip()])
+        old_members_set = set(existing_members)
         new_members_set = set([m.strip() for m in members_raw.replace('，', ',').split(',') if m.strip()])
         
         added_members = new_members_set - old_members_set
@@ -595,7 +593,6 @@ def edit_project(project_id):
         editor_name = user.get('global_name') or user.get('username')
         now_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-        # 更新時順便把 change_summary 寫入資料庫
         cursor.execute("UPDATE loot_projects SET item_name = ?, members = ?, tax_rate = ?, updated_by = ?, updated_at = ?, edit_summary = ? WHERE id = ?", 
                        (item_name, members_raw, tax_rate, editor_name, now_time, change_summary, project_id))
         conn.commit()
@@ -604,16 +601,39 @@ def edit_project(project_id):
 
     conn.close()
     
-    # 修改頁面的 HTML，也將 confirm 移除了
+    # 升級版的編輯頁面模板（完美整合智慧標籤選擇器）
     EDIT_TEMPLATE = """
     <!DOCTYPE html>
     <html>
     <head><meta charset="utf-8"><title>編輯打寶項目</title>
     <style>
-        body { background: #07090e; color: #f8fafc; font-family: sans-serif; padding: 40px; }
-        .card { background: #131b2e; border: 1px solid #1e293b; padding: 30px; border-radius: 12px; max-width: 600px; margin: auto; }
-        input, textarea { width: 100%; padding: 12px; background: #0b101d; border: 1px solid #1e293b; color: white; border-radius: 8px; margin-top: 6px; margin-bottom: 20px; }
-        .btn { padding: 10px 20px; background: #059669; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; text-decoration: none; }
+        :root {
+            --bg-body: #07090e;
+            --bg-card: #131b2e;
+            --border-color: #1e293b;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --accent-gold: #f59e0b;
+        }
+        body { background: var(--bg-body); color: var(--text-main); font-family: sans-serif; padding: 40px; }
+        .card { background: var(--bg-card); border: 1px solid var(--border-color); padding: 30px; border-radius: 12px; max-width: 700px; margin: auto; box-shadow: 0 8px 24px rgba(0,0,0,0.3); }
+        input, textarea { width: 100%; padding: 12px; background: #0b101d; border: 1px solid var(--border-color); color: white; border-radius: 8px; margin-top: 6px; margin-bottom: 20px; outline: none; }
+        input:focus, textarea:focus { border-color: var(--accent-gold); }
+        label { font-weight: 600; font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; display: block; margin-bottom: 4px; }
+        
+        .member-picker-box { background: #0b101d; border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; margin-top: 6px; margin-bottom: 15px; }
+        .member-search-input { width: 100%; margin-bottom: 10px; }
+        .member-suggestions { display: flex; flex-wrap: wrap; gap: 6px; max-height: 140px; overflow-y: auto; padding: 4px; }
+        .chip { background: #1e293b; border: 1px solid #334155; color: #f1f5f9; padding: 5px 10px; border-radius: 6px; font-size: 12px; cursor: pointer; transition: all 0.15s; }
+        .chip:hover { background: var(--accent-gold); color: black; border-color: var(--accent-gold); }
+        
+        .selected-tags { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; min-height: 45px; background: #07090e; padding: 10px; border-radius: 8px; border: 1px solid var(--border-color); }
+        .selected-tag { background: #2563eb; color: white; padding: 5px 10px; border-radius: 6px; font-size: 12px; display: inline-flex; align-items: center; gap: 6px; }
+        .selected-tag .remove-btn { cursor: pointer; font-weight: bold; color: #fca5a5; }
+        .selected-tag .remove-btn:hover { color: white; }
+
+        .btn { padding: 10px 20px; background: linear-gradient(135deg, #059669, #047857); color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; text-decoration: none; display: inline-flex; align-items: center; gap: 8px; }
+        .btn:hover { filter: brightness(1.1); }
         .btn-secondary { background: #334155; }
     </style>
     </head>
@@ -621,28 +641,96 @@ def edit_project(project_id):
         <div class="card">
             <h2>✏️ 編輯打寶項目 (#{{ proj[0] }})</h2>
             {% if proj[8] %}
-                <p style="font-size: 12px; color: #94a3b8;">最後修改紀錄：由 <b>{{ proj[8] }}</b> 於 {{ proj[9] }} 進行修改</p>
+                <p style="font-size: 12px; color: #94a3b8; margin-bottom: 20px;">最後修改紀錄：由 <b>{{ proj[8] }}</b> 於 {{ proj[9] }} 進行修改</p>
             {% endif %}
+            
             <form method="POST">
                 <label>物品名稱</label>
                 <input type="text" name="item_name" value="{{ proj[2] }}" required>
                 
-                <label>參與人員 (請用半形逗號分隔)</label>
-                <textarea name="members" rows="4" required>{{ proj[4] }}</textarea>
-                
+                <label>參與人員 (搜尋並點選加入，點擊 ✕ 移除)</label>
+                <div class="member-picker-box">
+                    <input type="text" id="memberSearch" class="member-search-input" placeholder="🔍 搜尋試算表成員 (例如: 聖騎士、高須、死靈)..." onkeyup="filterMembers()">
+                    <div class="member-suggestions" id="memberSuggestions"></div>
+                </div>
+                <div class="selected-tags" id="selectedTagsContainer"></div>
+                <input type="hidden" name="members" id="membersHiddenInput" required>
+
                 <label>交易所手續費 (%)</label>
                 <input type="number" name="tax_rate" value="{{ proj[6] }}" step="0.1">
 
-                <div style="display: flex; gap: 10px;">
+                <div style="display: flex; gap: 10px; margin-top: 10px;">
                     <button type="submit" class="btn">直接儲存修改</button>
-                    <a href="/?tab=pending" class="btn btn-secondary">取消返回</a>
+                    <a href="/?tab=pending" class="btn btn-secondary" style="line-height: normal;">取消返回</a>
                 </div>
             </form>
         </div>
+
+        <script>
+            const allMembers = {{ members_json | safe }};
+            let selectedMembers = {{ existing_members_json | safe }};
+
+            function renderSuggestions(filter = "") {
+                const container = document.getElementById("memberSuggestions");
+                container.innerHTML = "";
+                const filtered = allMembers.filter(m => m.toLowerCase().includes(filter.toLowerCase()) && !selectedMembers.includes(m));
+                
+                filtered.forEach(name => {
+                    const chip = document.createElement("div");
+                    chip.className = "chip";
+                    chip.innerText = "+ " + name;
+                    chip.onclick = () => addMember(name);
+                    container.appendChild(chip);
+                });
+            }
+
+            function renderTags() {
+                const container = document.getElementById("selectedTagsContainer");
+                const hiddenInput = document.getElementById("membersHiddenInput");
+                container.innerHTML = "";
+
+                if (selectedMembers.length === 0) {
+                    container.innerHTML = '<span style="color: var(--text-muted); font-size: 12px;">尚未選擇任何成員...</span>';
+                    hiddenInput.value = "";
+                    return;
+                }
+
+                selectedMembers.forEach(name => {
+                    const tag = document.createElement("div");
+                    tag.className = "selected-tag";
+                    tag.innerHTML = `${name} <span class="remove-btn" onclick="removeMember('${name}')">✕</span>`;
+                    container.appendChild(tag);
+                });
+
+                hiddenInput.value = selectedMembers.join(", ");
+            }
+
+            function addMember(name) {
+                if (!selectedMembers.includes(name)) {
+                    selectedMembers.push(name);
+                    renderTags();
+                    filterMembers();
+                }
+            }
+
+            function removeMember(name) {
+                selectedMembers = selectedMembers.filter(m => m !== name);
+                renderTags();
+                filterMembers();
+            }
+
+            function filterMembers() {
+                const query = document.getElementById("memberSearch").value;
+                renderSuggestions(query);
+            }
+
+            renderTags();
+            renderSuggestions();
+        </script>
     </body>
     </html>
     """
-    return render_template_string(EDIT_TEMPLATE, proj=proj)
+    return render_template_string(EDIT_TEMPLATE, proj=proj, members_json=members_json, existing_members_json=existing_members_json)
 
 @app.route('/create_loot', methods=['POST'])
 def create_loot():
@@ -725,8 +813,8 @@ def toggle_status(record_id):
     
     if row:
         member_name, current_status = row
-        is_admin = user.get('id') in ADMIN_DISCORD_IDS
-        if is_admin or user.get('username') == member_name or user.get('global_name') == member_name:
+        is_admin = user.get('id'] in ADMIN_DISCORD_IDS
+        if is_admin or user.get('username'] == member_name or user.get('global_name') == member_name:
             new_status = 0 if current_status == 1 else 1
             cursor.execute("UPDATE split_records SET status = ? WHERE id = ?", (new_status, record_id))
             conn.commit()
