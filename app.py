@@ -319,7 +319,7 @@ HTML_TEMPLATE = """
                     </div>
                     <div class="form-group full">
                         <label>打到的物品名稱</label>
-                        <input type="text" id="item_name" name="item_name" required placeholder="例如：+10 稀有防具 / 王卡">
+                        <input type="text" id="item_name" name="item_name" placeholder="例如：+10 稀有防具 / 王卡">
                     </div>
                     
                     <div class="form-group full">
@@ -504,7 +504,7 @@ HTML_TEMPLATE = """
 @app.route('/')
 def index():
     user = session.get('user')
-    is_admin = user and user.get('id') in ADMIN_DISCORD_IDS  # <-- 已修正此處的括號錯誤
+    is_admin = user and user.get('id') in ADMIN_DISCORD_IDS 
     tab = request.args.get('tab', 'dashboard')
     today = datetime.now().strftime('%Y-%m-%d')
 
@@ -643,7 +643,7 @@ def edit_project(project_id):
             
             <form method="POST">
                 <label>物品名稱</label>
-                <input type="text" name="item_name" value="{{ proj[2] }}" required>
+                <input type="text" name="item_name" value="{{ proj[2] }}">
                 
                 <label>參與人員 (搜尋並點選加入，點擊 ✕ 移除)</label>
                 <div class="member-picker-box">
@@ -686,12 +686,6 @@ def edit_project(project_id):
                 const hiddenInput = document.getElementById("membersHiddenInput");
                 container.innerHTML = "";
 
-                if (selectedMembers.length === 0) {
-                    container.innerHTML = '<span style="color: var(--text-muted); font-size: 12px;">尚未選擇任何成員...</span>';
-                    hiddenInput.value = "";
-                    return;
-                }
-
                 selectedMembers.forEach(name => {
                     const tag = document.createElement("div");
                     tag.className = "selected-tag";
@@ -721,82 +715,144 @@ def edit_project(project_id):
                 renderSuggestions(query);
             }
 
-            renderTags();
             renderSuggestions();
+            renderTags();
         </script>
     </body>
     </html>
     """
     return render_template_string(EDIT_TEMPLATE, proj=proj, members_json=members_json, existing_members_json=existing_members_json)
 
+# 路由：Discord 登入
+@app.route('/login')
+def login():
+    discord_login_url = f"https://discord.com/api/oauth2/authorize?client_id={CLIENT_ID}&redirect_uri={REDIRECT_URI}&response_type=code&scope=identify"
+    return redirect(discord_login_url)
+
+# 路由：Discord 登入回調
+@app.route('/callback')
+def callback():
+    code = request.args.get('code')
+    if not code:
+        return redirect(url_for('index'))
+
+    data = {
+        'client_id': CLIENT_ID,
+        'client_secret': CLIENT_SECRET,
+        'grant_type': 'authorization_code',
+        'code': code,
+        'redirect_uri': REDIRECT_URI,
+    }
+    headers = {'Content-Type': 'application/x-www-form-urlencoded'}
+    
+    token_res = requests.post('https://discord.com/api/oauth2/token', data=data, headers=headers)
+    if token_res.status_code != 200:
+        return "Discord 授權失敗 (Token 取得錯誤)", 400
+
+    access_token = token_res.json().get('access_token')
+    
+    user_res = requests.get('https://discord.com/api/users/@me', headers={'Authorization': f'Bearer {access_token}'})
+    if user_res.status_code != 200:
+        return "無法取得 Discord 使用者資料", 400
+
+    user_data = user_res.json()
+    session['user'] = {
+        'id': user_data.get('id'),
+        'username': user_data.get('username'),
+        'global_name': user_data.get('global_name')
+    }
+
+    return redirect(url_for('index'))
+
+# 路由：登出
+@app.route('/logout')
+def logout():
+    session.pop('user', None)
+    return redirect(url_for('index'))
+
+# 路由：建立打寶與分紅登記
 @app.route('/create_loot', methods=['POST'])
 def create_loot():
     leader_name = request.form.get('leader_name')
+    item_name = request.form.get('item_name') or "未命名物品"
     loot_date = request.form.get('loot_date')
-    item_name = request.form.get('item_name')
     members_raw = request.form.get('members', '')
     total_price = float(request.form.get('total_price', 0))
     tax_rate = float(request.form.get('tax_rate', 0))
 
-    members = [m.strip() for m in members_raw.replace('，', ',').split(',') if m.strip()]
-    if not members:
-        return "請至少輸入一位參與成員！", 400
+    members_list = [m.strip() for m in members_raw.replace('，', ',').split(',') if m.strip()]
+    member_count = len(members_list)
 
     conn = sqlite3.connect("guild_database.db")
     cursor = conn.cursor()
 
-    if total_price > 0:
-        status = 'active'
-        net_price = total_price * (1 - tax_rate / 100)
-        per_person = net_price / len(members)
-
-        cursor.execute(
-            "INSERT INTO loot_projects (leader_name, item_name, loot_date, members, total_price, tax_rate, status) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (leader_name, item_name, loot_date, members_raw, total_price, tax_rate, status)
-        )
+    if total_price > 0 and member_count > 0:
+        status = 'completed'
+        cursor.execute("""
+            INSERT INTO loot_projects (leader_name, item_name, loot_date, members, total_price, tax_rate, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (leader_name, item_name, loot_date, members_raw, total_price, tax_rate, status))
         project_id = cursor.lastrowid
 
-        for m in members:
-            cursor.execute(
-                "INSERT INTO split_records (project_id, member_name, item_name, total_per_person, leader_name, status) VALUES (?, ?, ?, ?, ?, 0)",
-                (project_id, m, item_name, per_person, leader_name)
-            )
+        actual_total = total_price * (1 - tax_rate / 100.0)
+        per_person = actual_total / member_count
+
+        for m in members_list:
+            cursor.execute("""
+                INSERT INTO split_records (project_id, member_name, item_name, total_per_person, leader_name, status)
+                VALUES (?, ?, ?, ?, ?, 0)
+            """, (project_id, m, item_name, per_person, leader_name))
+        
+        conn.commit()
+        conn.close()
+        return redirect(url_for('index', tab='dashboard'))
     else:
-        cursor.execute(
-            "INSERT INTO loot_projects (leader_name, item_name, loot_date, members, total_price, tax_rate, status) VALUES (?, ?, ?, ?, ?, ?, 'pending')",
-            (leader_name, item_name, loot_date, members_raw, 0, tax_rate)
-        )
+        status = 'pending'
+        cursor.execute("""
+            INSERT INTO loot_projects (leader_name, item_name, loot_date, members, total_price, tax_rate, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (leader_name, item_name, loot_date, members_raw, total_price, tax_rate, status))
+        
+        conn.commit()
+        conn.close()
+        return redirect(url_for('index', tab='pending'))
 
-    conn.commit()
-    conn.close()
-    return redirect(url_for('index', tab='dashboard'))
-
+# 路由：待售寶物結算轉入分錢明細
 @app.route('/activate/<int:project_id>', methods=['POST'])
 def activate_project(project_id):
     sold_price = float(request.form.get('sold_price', 0))
-    
+
     conn = sqlite3.connect("guild_database.db")
     cursor = conn.cursor()
+
     cursor.execute("SELECT leader_name, item_name, members, tax_rate FROM loot_projects WHERE id = ?", (project_id,))
     proj = cursor.fetchone()
-    
-    if proj:
-        leader_name, item_name, members_raw, tax_rate = proj
-        members = [m.strip() for m in members_raw.replace('，', ',').split(',') if m.strip()]
-        net_price = sold_price * (1 - tax_rate / 100)
-        per_person = net_price / len(members) if members else 0
 
-        cursor.execute("UPDATE loot_projects SET total_price = ?, status = 'active' WHERE id = ?", (sold_price, project_id))
+    if not proj:
+        conn.close()
+        return "找不到該筆待售記錄！", 404
 
-        for m in members:
-            cursor.execute(
-                "INSERT INTO split_records (project_id, member_name, item_name, total_per_person, leader_name, status) VALUES (?, ?, ?, ?, ?, 0)",
-                (project_id, m, item_name, per_person, leader_name)
-            )
+    leader_name, item_name, members_str, tax_rate = proj[0], proj[1], proj[2], proj[3]
+    members_list = [m.strip() for m in members_str.replace('，', ',').split(',') if m.strip()]
+    member_count = len(members_list)
+
+    if member_count > 0:
+        actual_total = sold_price * (1 - tax_rate / 100.0)
+        per_person = actual_total / member_count
+
+        for m in members_list:
+            cursor.execute("""
+                INSERT INTO split_records (project_id, member_name, item_name, total_per_person, leader_name, status)
+                VALUES (?, ?, ?, ?, ?, 0)
+            """, (project_id, m, item_name, per_person, leader_name))
+
+        cursor.execute("UPDATE loot_projects SET total_price = ?, status = 'completed' WHERE id = ?", (sold_price, project_id))
         conn.commit()
+
     conn.close()
     return redirect(url_for('index', tab='dashboard'))
 
+# 路由：切換領取狀態 (已領取 / 未領取)
 @app.route('/toggle/<int:record_id>', methods=['POST'])
 def toggle_status(record_id):
     user = session.get('user')
@@ -805,36 +861,30 @@ def toggle_status(record_id):
 
     conn = sqlite3.connect("guild_database.db")
     cursor = conn.cursor()
-    cursor.execute("SELECT member_name, status FROM split_records WHERE id = ?", (record_id,))
+
+    cursor.execute("SELECT member_name FROM split_records WHERE id = ?", (record_id,))
     row = cursor.fetchone()
-    
-    if row:
-        member_name, current_status = row
-        is_admin = user.get('id') in ADMIN_DISCORD_IDS
-        if is_admin or user.get('username') == member_name or user.get('global_name') == member_name:
-            new_status = 0 if current_status == 1 else 1
-            cursor.execute("UPDATE split_records SET status = ? WHERE id = ?", (new_status, record_id))
-            conn.commit()
+    if not row:
+        conn.close()
+        return "找不到該筆紀錄", 404
+
+    member_name = row[0]
+    is_admin = user.get('id') in ADMIN_DISCORD_IDS
+    is_self = (user.get('username') == member_name or user.get('global_name') == member_name)
+
+    if not is_admin and not is_self:
+        conn.close()
+        return "權限不足：您只能修改自己的領取狀態！", 403
+
+    cursor.execute("SELECT status FROM split_records WHERE id = ?", (record_id,))
+    current_status = cursor.fetchone()[0]
+    new_status = 0 if current_status == 1 else 1
+
+    cursor.execute("UPDATE split_records SET status = ? WHERE id = ?", (new_status, record_id))
+    conn.commit()
     conn.close()
-    return redirect(url_for('index'))
 
-@app.route('/login')
-def login():
-    return redirect(f"https://discord.com/api/oauth2/authorize?client_id={CLIENT_ID}&redirect_uri={REDIRECT_URI}&response_type=code&scope=identify")
-
-@app.route('/callback')
-def callback():
-    code = request.args.get('code')
-    resp = requests.post("https://discord.com/api/oauth2/token", data={
-        'client_id': CLIENT_ID, 'client_secret': CLIENT_SECRET, 'grant_type': 'authorization_code',
-        'code': code, 'redirect_uri': REDIRECT_URI
-    })
-    
-    token = resp.json().get('access_token')
-    if token:
-        user_resp = requests.get("https://discord.com/api/users/@me", headers={'Authorization': f'Bearer {token}'})
-        session['user'] = user_resp.json()
-    return redirect(url_for('index'))
+    return redirect(url_for('index', tab='dashboard'))
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    app.run(host='0.0.0.0', port=5000, debug=True)
