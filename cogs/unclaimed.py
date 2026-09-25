@@ -195,7 +195,7 @@ HTML_TEMPLATE = """
                     <td>{{ row[0] }}</td>
                     <td><b>{{ row[1] }}</b></td>
                     <td>{{ row[2] }}</td>
-                    <td>`{{ "{:,}".format(row[3]|int) }}` 元</td>
+                    <td>{{ "{:,}".format(row[3]|int) }} 元</td>
                     <td>{{ row[4] }}</td>
                     <td>
                         {% if row[5] == 1 %}
