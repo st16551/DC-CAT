@@ -321,7 +321,7 @@ HTML_TEMPLATE = """
                     </div>
                     <div class="form-group full">
                         <label>打到的物品名稱</label>
-                        <input type="text" id="item_name" name="item_name" required placeholder="例如：+10 稀有防具 / 王卡">
+                        <input type="text" id="item_name" name="item_name" placeholder="例如：+10 稀有防具 / 王卡">
                     </div>
                     
                     <div class="form-group full">
