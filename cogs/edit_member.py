@@ -155,12 +155,19 @@ class EditMemberCog(commands.Cog):
     @app_commands.checks.has_permissions(manage_roles=True)
     @app_commands.default_permissions(manage_roles=True)
     async def edit_member(self, interaction: discord.Interaction, member: discord.Member):
-        # 這裡的參數改成了 discord.Member，幹部只需要輸入 @ 或在選單點選成員即可！
         target_id_int = member.id
+        target_id_str = str(target_id_int)
 
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
-        cursor.execute("SELECT discord_id, discord_name, game_name, character_name, main_class, branch FROM game_characters WHERE discord_id = ?", (target_id_int,))
+        
+        # 🛡️ 雙重保險查詢：支援數字與文字欄位比對
+        cursor.execute("""
+            SELECT discord_id, discord_name, game_name, character_name, main_class, branch 
+            FROM game_characters 
+            WHERE discord_id = ? OR CAST(discord_id AS TEXT) = ?
+        """, (target_id_int, target_id_str))
+        
         row = cursor.fetchone()
         conn.close()
 
