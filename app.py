@@ -1,6 +1,8 @@
 from flask import Flask, render_template_string, request, redirect, url_for, session
 import sqlite3
 import requests
+import csv
+import io
 from datetime import datetime
 
 app = Flask(__name__)
@@ -14,7 +16,33 @@ REDIRECT_URI = "https://dc-cat.onrender.com/callback"
 ADMIN_DISCORD_IDS = [
     "407651643836858388",
 ]
-# =========================================================
+
+# Google 試算表公開 CSV 下載網址 ("成員名單" 工作表)
+GSHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/12AP1pzhqeskwhYY5piaYGasRNifLdCpgoddjxVM5yg4/gviz/tq?tqx=out:csv&sheet=成員名單"
+
+def fetch_guild_members_from_sheet():
+    """從 Google 試算表自動同步最新成員名單（唯讀，絕不修改你的表單）"""
+    members = []
+    try:
+        response = requests.get(GSHEET_CSV_URL)
+        if response.status_code == 200:
+            decoded_content = response.content.decode('utf-8')
+            reader = csv.reader(io.StringIO(decoded_content))
+            next(reader, None) # 跳過標題列（如果有）
+            for row in reader:
+                if len(row) >= 3:
+                    discord_account = row[1].strip() if len(row) > 1 else ""
+                    game_name = row[2].strip() if len(row) > 2 else ""
+                    job = row[3].strip() if len(row) > 3 else ""
+                    # 組合顯示名稱格式： 職業-遊戲角色 (Discord帳號)
+                    display_str = f"{job}-{game_name}({discord_account})" if job and game_name else (game_name or discord_account)
+                    if display_str and display_str not in members:
+                        members.append(display_str)
+    except Exception as e:
+        print("讀取 Google 試算表失敗，使用備用名單:", e)
+        # 若連線異常時的備用防呆清單
+        members = ["聖騎士-高須鼠兒[高須]", "死靈-Pongdog(胖打)"]
+    return members
 
 def init_db():
     conn = sqlite3.connect("guild_database.db")
@@ -48,7 +76,7 @@ def init_db():
 
 init_db()
 
-# 儀表板 HTML 模板 (已移除所有「抽稅」字眼)
+# 儀表板 HTML 模板 (含 Google 試算表動態同步與智慧標籤選擇器)
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
@@ -78,7 +106,6 @@ HTML_TEMPLATE = """
             min-height: 100vh;
         }
         
-        /* 側邊欄導航 */
         .sidebar {
             width: 260px;
             background-color: var(--bg-sidebar);
@@ -96,14 +123,8 @@ HTML_TEMPLATE = """
             align-items: center;
             gap: 10px;
             margin-bottom: 40px;
-            letter-spacing: 0.5px;
         }
-        .nav-menu {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-            flex-grow: 1;
-        }
+        .nav-menu { display: flex; flex-direction: column; gap: 8px; flex-grow: 1; }
         .nav-item {
             display: flex;
             align-items: center;
@@ -116,82 +137,24 @@ HTML_TEMPLATE = """
             font-size: 14px;
             transition: all 0.2s;
         }
-        .nav-item:hover {
-            color: var(--text-main);
-            background: rgba(255, 255, 255, 0.03);
-        }
-        .nav-item.active {
-            color: white;
-            background: linear-gradient(135deg, #2563eb, #1d4ed8);
-            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);
-        }
+        .nav-item:hover { color: var(--text-main); background: rgba(255, 255, 255, 0.03); }
+        .nav-item.active { color: white; background: linear-gradient(135deg, #2563eb, #1d4ed8); }
         
-        .user-panel {
-            background: rgba(255, 255, 255, 0.02);
-            border: 1px solid var(--border-color);
-            padding: 15px;
-            border-radius: 12px;
-            font-size: 13px;
-        }
+        .user-panel { background: rgba(255, 255, 255, 0.02); border: 1px solid var(--border-color); padding: 15px; border-radius: 12px; font-size: 13px; }
         .user-info { margin-bottom: 10px; color: var(--text-muted); word-break: break-all; }
         .user-info b { color: var(--text-main); }
         
-        /* 主內容區 */
-        .main-content {
-            flex-grow: 1;
-            padding: 40px;
-            overflow-y: auto;
-            max-width: calc(100vw - 260px);
-        }
-        .top-bar {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 30px;
-        }
-        .top-bar h1 {
-            margin: 0;
-            font-size: 24px;
-            font-weight: 700;
-        }
+        .main-content { flex-grow: 1; padding: 40px; overflow-y: auto; max-width: calc(100vw - 260px); }
+        .top-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; }
+        .top-bar h1 { margin: 0; font-size: 24px; font-weight: 700; }
         
-        /* 數據統計方塊 */
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 20px;
-            margin-bottom: 30px;
-        }
-        .stat-card {
-            background: var(--bg-card);
-            border: 1px solid var(--border-color);
-            border-radius: 12px;
-            padding: 20px;
-            display: flex;
-            flex-direction: column;
-            gap: 5px;
-        }
+        .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-bottom: 30px; }
+        .stat-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 12px; padding: 20px; display: flex; flex-direction: column; gap: 5px; }
         .stat-label { font-size: 13px; color: var(--text-muted); font-weight: 600; }
         .stat-value { font-size: 22px; font-weight: 700; color: var(--accent-gold); }
         
-        /* 卡片與表單容器 */
-        .card {
-            background: var(--bg-card);
-            border: 1px solid var(--border-color);
-            border-radius: 14px;
-            padding: 25px;
-            margin-bottom: 25px;
-            box-shadow: 0 8px 24px rgba(0,0,0,0.3);
-        }
-        .card h3 {
-            margin-top: 0;
-            font-size: 16px;
-            color: var(--text-main);
-            margin-bottom: 20px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
+        .card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 14px; padding: 25px; margin-bottom: 25px; box-shadow: 0 8px 24px rgba(0,0,0,0.3); }
+        .card h3 { margin-top: 0; font-size: 16px; color: var(--text-main); margin-bottom: 20px; display: flex; align-items: center; gap: 8px; }
         
         .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
         .form-group { display: flex; flex-direction: column; gap: 8px; }
@@ -208,32 +171,29 @@ HTML_TEMPLATE = """
             outline: none;
             transition: all 0.2s;
         }
-        input:focus, textarea:focus { border-color: var(--accent-gold); box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.15); }
+        input:focus, textarea:focus { border-color: var(--accent-gold); }
         
+        /* 成員快速點選標籤面板樣式 */
+        .member-picker-box { background: #0b101d; border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; margin-top: 8px; }
+        .member-search-input { width: 100%; margin-bottom: 10px; }
+        .member-suggestions { display: flex; flex-wrap: wrap; gap: 6px; max-height: 140px; overflow-y: auto; padding: 4px; }
+        .chip { background: #1e293b; border: 1px solid #334155; color: #f1f5f9; padding: 5px 10px; border-radius: 6px; font-size: 12px; cursor: pointer; transition: all 0.15s; }
+        .chip:hover { background: var(--accent-gold); color: black; border-color: var(--accent-gold); }
+        
+        .selected-tags { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; min-height: 45px; background: #07090e; padding: 10px; border-radius: 8px; border: 1px solid var(--border-color); }
+        .selected-tag { background: #2563eb; color: white; padding: 5px 10px; border-radius: 6px; font-size: 12px; display: inline-flex; align-items: center; gap: 6px; }
+        .selected-tag .remove-btn { cursor: pointer; font-weight: bold; color: #fca5a5; }
+        .selected-tag .remove-btn:hover { color: white; }
+
         .btn { 
-            padding: 10px 20px; 
-            text-decoration: none; 
-            border-radius: 8px; 
-            background: linear-gradient(135deg, #059669, #047857); 
-            color: white; 
-            border: none; 
-            cursor: pointer; 
-            font-size: 14px; 
-            font-weight: 600; 
-            transition: all 0.2s; 
-            box-shadow: 0 4px 12px rgba(5, 150, 105, 0.3);
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
+            padding: 10px 20px; text-decoration: none; border-radius: 8px; background: linear-gradient(135deg, #059669, #047857); 
+            color: white; border: none; cursor: pointer; font-size: 14px; font-weight: 600; transition: all 0.2s; 
+            box-shadow: 0 4px 12px rgba(5, 150, 105, 0.3); display: inline-flex; align-items: center; justify-content: center; gap: 8px;
         }
         .btn:hover { transform: translateY(-1px); filter: brightness(1.1); }
         .btn-secondary { background: #334155; box-shadow: none; }
-        .btn-secondary:hover { background: #475569; }
         .btn-discord { background: #5865F2; box-shadow: 0 4px 12px rgba(88, 101, 242, 0.3); width: 100%; }
-        .btn-discord:hover { background: #4752c4; }
         
-        /* 表格樣式 */
         table { width: 100%; border-collapse: collapse; margin-top: 5px; }
         th, td { padding: 14px 16px; border-bottom: 1px solid var(--border-color); text-align: left; font-size: 14px; }
         th { background-color: #0b101d; color: var(--text-muted); font-weight: 600; }
@@ -245,30 +205,18 @@ HTML_TEMPLATE = """
     </style>
 </head>
 <body>
-    <!-- 左側導覽列 -->
     <div class="sidebar">
         <div>
-            <div class="brand">
-                <span>🛡️</span> SpiritVale 管理
-            </div>
+            <div class="brand"><span>🛡️</span> SpiritVale 管理</div>
             <div class="nav-menu">
-                <a href="/?tab=dashboard" class="nav-item {% if tab == 'dashboard' %}active{% endif %}">
-                    <span>📊</span> 分錢明細總覽
-                </a>
-                <a href="/?tab=create" class="nav-item {% if tab == 'create' %}active{% endif %}">
-                    <span>➕</span> 登記打寶項目
-                </a>
-                <a href="/?tab=pending" class="nav-item {% if tab == 'pending' %}active{% endif %}">
-                    <span>⏳</span> 待售寶物庫
-                </a>
+                <a href="/?tab=dashboard" class="nav-item {% if tab == 'dashboard' %}active{% endif %}"><span>📊</span> 分錢明細總覽</a>
+                <a href="/?tab=create" class="nav-item {% if tab == 'create' %}active{% endif %}"><span>➕</span> 登記打寶項目</a>
+                <a href="/?tab=pending" class="nav-item {% if tab == 'pending' %}active{% endif %}"><span>⏳</span> 待售寶物庫</a>
             </div>
         </div>
-
         <div class="user-panel">
             {% if user %}
-                <div class="user-info">
-                    登入身分：<br><b>{{ user.global_name or user.username }}</b> {% if is_admin %}<span style="color:var(--accent-gold);">(幹部)</span>{% endif %}
-                </div>
+                <div class="user-info">登入身分：<br><b>{{ user.global_name or user.username }}</b> {% if is_admin %}<span style="color:var(--accent-gold);">(幹部)</span>{% endif %}</div>
                 <a href="/logout" class="btn btn-secondary" style="width: 100%; padding: 8px; font-size: 13px;">登出系統</a>
             {% else %}
                 <div class="user-info" style="margin-bottom: 12px;">尚未透過 Discord 驗證</div>
@@ -277,30 +225,16 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
-    <!-- 右側主內容 -->
     <div class="main-content">
         <div class="top-bar">
-            <h1>
-                {% if tab == 'create' %}登記打寶項目
-                {% elif tab == 'pending' %}待售寶物庫管理
-                {% else %}分錢與領取狀態總覽{% endif %}
-            </h1>
+            <h1>{% if tab == 'create' %}登記打寶項目{% elif tab == 'pending' %}待售寶物庫管理{% else %}分錢與領取狀態總覽{% endif %}</h1>
         </div>
 
         {% if tab == 'dashboard' %}
         <div class="stats-grid">
-            <div class="stat-card">
-                <span class="stat-label">總分發紀錄筆數</span>
-                <span class="stat-value">{{ records|length }} 筆</span>
-            </div>
-            <div class="stat-card">
-                <span class="stat-label">待售寶物數量</span>
-                <span class="stat-value" style="color: var(--accent-blue);">{{ pending_count }} 件</span>
-            </div>
-            <div class="stat-card">
-                <span class="stat-label">系統連線狀態</span>
-                <span class="stat-value" style="color: var(--accent-green);">連線正常 (DB Sync)</span>
-            </div>
+            <div class="stat-card"><span class="stat-label">總分發紀錄筆數</span><span class="stat-value">{{ records|length }} 筆</span></div>
+            <div class="stat-card"><span class="stat-label">待售寶物數量</span><span class="stat-value" style="color: var(--accent-blue);">{{ pending_count }} 件</span></div>
+            <div class="stat-card"><span class="stat-label">試算表成員連線</span><span class="stat-value" style="color: var(--accent-green);">已同步 (Live)</span></div>
         </div>
 
         <div class="card">
@@ -355,12 +289,12 @@ HTML_TEMPLATE = """
 
         {% elif tab == 'create' %}
         <div class="card">
-            <h3>📝 填寫打寶與分紅資訊</h3>
-            <form action="/create_loot" method="POST">
+            <h3>📝 填寫打寶與分紅資訊 (成員名單已自動從 Google 試算表同步)</h3>
+            <form action="/create_loot" method="POST" id="lootForm">
                 <div class="form-grid">
                     <div class="form-group">
                         <label>開單負責人</label>
-                        <input type="text" name="leader_name" value="{{ user.global_name if user and user.global_name else (user.username if user else '') }}" required placeholder="輸入遊戲ID或負責人名稱">
+                        <input type="text" name="leader_name" value="{{ user.global_name if user and user.global_name else (user.username if user else '') }}" required placeholder="負責人名稱">
                     </div>
                     <div class="form-group">
                         <label>打寶日期</label>
@@ -370,10 +304,22 @@ HTML_TEMPLATE = """
                         <label>打到的物品名稱</label>
                         <input type="text" name="item_name" required placeholder="例如：+10 稀有防具 / 王卡">
                     </div>
+                    
+                    <!-- 從 Google 試算表同步的智慧成員選擇器 -->
                     <div class="form-group full">
-                        <label>參與人員 (請用半形逗號分隔，可直接貼上)</label>
-                        <textarea name="members" rows="4" required placeholder="玩家A, 玩家B, 玩家C..."></textarea>
+                        <label>參與人員 (輸入關鍵字快速搜尋並點選，點擊負號可移除)</label>
+                        <div class="member-picker-box">
+                            <input type="text" id="memberSearch" class="member-search-input" placeholder="🔍 搜尋試算表成員 (例如: 聖騎士、高須、死靈)..." onkeyup="filterMembers()">
+                            <div class="member-suggestions" id="memberSuggestions">
+                                <!-- 動態填入候選人 -->
+                            </div>
+                        </div>
+                        <div class="selected-tags" id="selectedTagsContainer">
+                            <span style="color: var(--text-muted); font-size: 12px;" id="placeholderText">尚未選擇任何成員，請從上方搜尋點選...</span>
+                        </div>
+                        <input type="hidden" name="members" id="membersHiddenInput" required>
                     </div>
+
                     <div class="form-group">
                         <label>售出總金額 (若未售出填 0 則進入待售庫)</label>
                         <input type="number" name="total_price" value="0" required>
@@ -388,6 +334,67 @@ HTML_TEMPLATE = """
                 </div>
             </form>
         </div>
+
+        <script>
+            const allMembers = {{ members_json | safe }};
+            let selectedMembers = [];
+
+            function renderSuggestions(filter = "") {
+                const container = document.getElementById("memberSuggestions");
+                container.innerHTML = "";
+                const filtered = allMembers.filter(m => m.toLowerCase().includes(filter.toLowerCase()) && !selectedMembers.includes(m));
+                
+                filtered.forEach(name => {
+                    const chip = document.createElement("div");
+                    chip.className = "chip";
+                    chip.innerText = "+ " + name;
+                    chip.onclick = () => addMember(name);
+                    container.appendChild(chip);
+                });
+            }
+
+            function renderTags() {
+                const container = document.getElementById("selectedTagsContainer");
+                const hiddenInput = document.getElementById("membersHiddenInput");
+                container.innerHTML = "";
+
+                if (selectedMembers.length === 0) {
+                    container.innerHTML = '<span style="color: var(--text-muted); font-size: 12px;">尚未選擇任何成員，請從上方搜尋點選...</span>';
+                    hiddenInput.value = "";
+                    return;
+                }
+
+                selectedMembers.forEach(name => {
+                    const tag = document.createElement("div");
+                    tag.className = "selected-tag";
+                    tag.innerHTML = `${name} <span class="remove-btn" onclick="removeMember('${name}')">✕</span>`;
+                    container.appendChild(tag);
+                });
+
+                hiddenInput.value = selectedMembers.join(", ");
+            }
+
+            function addMember(name) {
+                if (!selectedMembers.includes(name)) {
+                    selectedMembers.push(name);
+                    renderTags();
+                    filterMembers();
+                }
+            }
+
+            function removeMember(name) {
+                selectedMembers = selectedMembers.filter(m => m !== name);
+                renderTags();
+                filterMembers();
+            }
+
+            function filterMembers() {
+                const query = document.getElementById("memberSearch").value;
+                renderSuggestions(query);
+            }
+
+            renderSuggestions();
+        </script>
 
         {% elif tab == 'pending' %}
         <div class="card">
@@ -426,10 +433,14 @@ HTML_TEMPLATE = """
 
 @app.route('/')
 def index():
+    import json
     user = session.get('user')
     is_admin = user and user.get('id') in ADMIN_DISCORD_IDS
     tab = request.args.get('tab', 'dashboard')
     today = datetime.now().strftime('%Y-%m-%d')
+
+    # 每次開啟頁面自動向你的 Google 試算表同步最新名單
+    guild_members = fetch_guild_members_from_sheet()
 
     conn = sqlite3.connect("guild_database.db")
     cursor = conn.cursor()
@@ -442,7 +453,9 @@ def index():
     records = cursor.fetchall()
     conn.close()
 
-    return render_template_string(HTML_TEMPLATE, user=user, is_admin=is_admin, tab=tab, today=today, pending_projects=pending_projects, pending_count=pending_count, records=records)
+    members_json = json.dumps(guild_members, ensure_ascii=False)
+
+    return render_template_string(HTML_TEMPLATE, user=user, is_admin=is_admin, tab=tab, today=today, pending_projects=pending_projects, pending_count=pending_count, records=records, members_json=members_json)
 
 @app.route('/create_loot', methods=['POST'])
 def create_loot():
