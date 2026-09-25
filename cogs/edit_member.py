@@ -9,7 +9,7 @@ DB_FILE = "guild_database.db"
 SPREADSHEET_ID = "12AP1pzhqeskwhYY5piaYGasRNifLdCpgoddjxVM5yg4"
 CREDENTIALS_FILE = "credentials.json"
 
-# 📝 身分組 ID 對應字典（請填入你伺服器的身分組 ID）
+# 📝 身分組 ID 對應字典
 ROLE_IDS = {
     "牧師": 1529725865024557196,
     "聖騎": 1529726272471568454,
@@ -21,9 +21,9 @@ ROLE_IDS = {
     "戰士": 1529734718193668127,
     
     # 分會身分組
-    "1會": 1541087729088200765,  # 例如 Escalation
-    "2会": 1541087803151098079,  # 例如 Escalation II
-    "3会": 1541087848298446998,  # 例如 Escalation III
+    "1會": 1541087729088200765,
+    "2会": 1541087803151098079,
+    "3会": 1541087848298446998,
 }
 
 def get_gspread_client():
@@ -35,13 +35,12 @@ def get_gspread_client():
     client = gspread.authorize(creds)
     return client
 
-class EditMemberByDiscordModal(discord.ui.Modal, title="🛠️ 依 Discord ID 修改成員資料"):
+class EditMemberByDiscordModal(discord.ui.Modal, title="🛠️ 修改成員資料"):
     def __init__(self, target_discord_id: int, db_data):
         super().__init__()
         self.target_discord_id = target_discord_id
         self.db_data = db_data
 
-        # db_data 欄位對應: (discord_id, discord_name, game_name, character_name, main_class, branch)
         self.new_char_name_input = discord.ui.TextInput(
             label="新遊戲角色 ID",
             default=db_data[3] if db_data else "",
@@ -89,13 +88,12 @@ class EditMemberByDiscordModal(discord.ui.Modal, title="🛠️ 依 Discord ID �
         conn.commit()
         conn.close()
 
-        # 2. 同步更新 Google 試算表 (透過 Discord ID 搜尋)[cite: 1]
+        # 2. 同步更新 Google 試算表[cite: 1]
         sheet_updated = False
         try:
             client = get_gspread_client()
             sheet = client.open_by_key(SPREADSHEET_ID).sheet1
             
-            # 尋找與該 Discord ID 吻合的儲存格[cite: 1]
             cell = sheet.find(str(self.target_discord_id))
             if cell:
                 row_idx = cell.row
@@ -136,7 +134,7 @@ class EditMemberByDiscordModal(discord.ui.Modal, title="🛠️ 依 Discord ID �
 
         await interaction.response.send_message(
             f"✅ **成功修改並替換成員資料！**\n"
-            f"• Target Discord ID：`{self.target_discord_id}`\n"
+            f"• 成員：{member.mention if member else f'<@{self.target_discord_id}>'}\n"
             f"• 原遊戲角色 ID：`{old_char_name}`\n"
             f"• 新遊戲角色 ID：`{new_char_name}`\n"
             f"• 新職業：`{new_class}`\n"
@@ -152,17 +150,13 @@ class EditMemberCog(commands.Cog):
 
     @app_commands.command(
         name="修改成員資料",
-        description="【幹部專用】輸入成員的 Discord ID，直接線上修改並更新其遊戲角色、職業與分會"
+        description="【幹部專用】直接點選或標註成員，線上修改並更新其遊戲角色、職業與分會"
     )
     @app_commands.checks.has_permissions(manage_roles=True)
-    @app_commands.default_permissions(manage_roles=True)  # 讓一般使用者預設直接看不到此指令
-    async def edit_member(self, interaction: discord.Interaction, discord_id: str):
-        # 確保輸入的是純數字 ID
-        if not discord_id.isdigit():
-            await interaction.response.send_message("❌ 請輸入有效的 Discord ID 純數字！", ephemeral=True)
-            return
-
-        target_id_int = int(discord_id)
+    @app_commands.default_permissions(manage_roles=True)
+    async def edit_member(self, interaction: discord.Interaction, member: discord.Member):
+        # 這裡的參數改成了 discord.Member，幹部只需要輸入 @ 或在選單點選成員即可！
+        target_id_int = member.id
 
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
@@ -171,7 +165,7 @@ class EditMemberCog(commands.Cog):
         conn.close()
 
         if not row:
-            await interaction.response.send_message(f"❌ 找不到 Discord ID 為 `{discord_id}` 的記錄！", ephemeral=True)
+            await interaction.response.send_message(f"❌ 找不到成員 {member.mention} 在資料庫中的記錄！", ephemeral=True)
             return
 
         modal = EditMemberByDiscordModal(target_discord_id=target_id_int, db_data=row)
