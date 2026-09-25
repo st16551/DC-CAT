@@ -48,7 +48,7 @@ def init_db():
 
 init_db()
 
-# 全新設計的儀表板 HTML 模板 (採用側邊欄與統計卡片風格)
+# 儀表板 HTML 模板 (已移除所有「抽稅」字眼)
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
@@ -267,7 +267,7 @@ HTML_TEMPLATE = """
         <div class="user-panel">
             {% if user %}
                 <div class="user-info">
-                    登入身分：<br><b>{{ user.username }}</b> {% if is_admin %}<span style="color:var(--accent-gold);">(幹部)</span>{% endif %}
+                    登入身分：<br><b>{{ user.global_name or user.username }}</b> {% if is_admin %}<span style="color:var(--accent-gold);">(幹部)</span>{% endif %}
                 </div>
                 <a href="/logout" class="btn btn-secondary" style="width: 100%; padding: 8px; font-size: 13px;">登出系統</a>
             {% else %}
@@ -288,7 +288,6 @@ HTML_TEMPLATE = """
         </div>
 
         {% if tab == 'dashboard' %}
-        <!-- 統計數據面板 -->
         <div class="stats-grid">
             <div class="stat-card">
                 <span class="stat-label">總分發紀錄筆數</span>
@@ -360,8 +359,8 @@ HTML_TEMPLATE = """
             <form action="/create_loot" method="POST">
                 <div class="form-grid">
                     <div class="form-group">
-                        <label>開單負責人 (遊戲ID)</label>
-                        <input type="text" name="leader_name" value="{{ user.username if user else '' }}" required placeholder="例如：Alex">
+                        <label>開單負責人</label>
+                        <input type="text" name="leader_name" value="{{ user.global_name if user and user.global_name else (user.username if user else '') }}" required placeholder="輸入遊戲ID或負責人名稱">
                     </div>
                     <div class="form-group">
                         <label>打寶日期</label>
@@ -372,7 +371,7 @@ HTML_TEMPLATE = """
                         <input type="text" name="item_name" required placeholder="例如：+10 稀有防具 / 王卡">
                     </div>
                     <div class="form-group full">
-                        <label>參與人員 (請用半形逗號分隔)</label>
+                        <label>參與人員 (請用半形逗號分隔，可直接貼上)</label>
                         <textarea name="members" rows="4" required placeholder="玩家A, 玩家B, 玩家C..."></textarea>
                     </div>
                     <div class="form-group">
@@ -380,7 +379,7 @@ HTML_TEMPLATE = """
                         <input type="number" name="total_price" value="0" required>
                     </div>
                     <div class="form-group">
-                        <label>交易所手續費/抽稅 (%)</label>
+                        <label>交易所手續費 (%)</label>
                         <input type="number" name="tax_rate" value="0" step="0.1">
                     </div>
                 </div>
