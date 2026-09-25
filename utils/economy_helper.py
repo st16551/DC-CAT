@@ -60,3 +60,14 @@ def update_user_coins(user_id: str, user_name: str, amount: int):
         "success": success,
         "new_balance": new_balance
     }
+
+def get_wallet_balance(discord_id: int) -> int:
+    """取得使用者的錢包餘額 (su_coins)"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT su_coins FROM member_levels WHERE discord_id = ?", (int(discord_id),))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return row[0]
+    return 0
