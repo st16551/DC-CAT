@@ -10,13 +10,7 @@ from utils import get_wallet_balance, modify_balance, get_db_connection
 
 # 已經根據平衡性調整過價格與時效的黑市道具清單
 BLACK_MARKET_ITEMS = {
-    "broadcast": {
-        "name": "全群廣播 / 大聲公",
-        "price": 350,
-        "hours": 0,
-        "type": "broadcast",
-        "description": "向全群廣播你的重要訊息（約 1 週產出）"
-    },
+    
     "rename_card": {
         "name": "強制改名卡",
         "price": 550,
