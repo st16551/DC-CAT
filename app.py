@@ -26,10 +26,10 @@ def init_db():
             leader_name TEXT,
             item_name TEXT,
             loot_date TEXT,
-            members TEXT, -- 以逗號分隔的成員名單
+            members TEXT,
             total_price REAL,
             tax_rate REAL,
-            status TEXT DEFAULT 'pending' -- pending(待售), active(分錢中), archived(已歸檔)
+            status TEXT DEFAULT 'pending'
         )
     ''')
     # 建立個人領取狀態表
@@ -41,7 +41,7 @@ def init_db():
             item_name TEXT,
             total_per_person REAL,
             leader_name TEXT,
-            status INTEGER DEFAULT 0, -- 0:未領, 1:已領
+            status INTEGER DEFAULT 0,
             FOREIGN KEY(project_id) REFERENCES loot_projects(id)
         )
     ''')
@@ -50,7 +50,7 @@ def init_db():
 
 init_db()
 
-# 網頁前端 HTML 模板 (已改為沉浸式 MMORPG 遊戲風暗黑介面)
+# 網頁前端 HTML 模板
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
@@ -207,7 +207,7 @@ HTML_TEMPLATE = """
                 <div class="form-grid">
                     <div class="form-group">
                         <label>開單負責人 (你的遊戲ID)</label>
-                        <input type="text" name="leader_name" value="{{ user.username if user else '' }}" required placeholder="例如：小修、團長A">
+                        <input type="text" name="leader_name" value="{{ user.username if user else '' }}" required placeholder="請輸入負責人遊戲ID">
                     </div>
                     <div class="form-group">
                         <label>打寶日期</label>
@@ -215,11 +215,11 @@ HTML_TEMPLATE = """
                     </div>
                     <div class="form-group full">
                         <label>打到的物品名稱</label>
-                        <input type="text" name="item_name" required placeholder="例如：冰泰坦卡、150王團 牧師卡">
+                        <input type="text" name="item_name" required placeholder="例如：稀有裝備、王卡、高級素材">
                     </div>
                     <div class="form-group full">
                         <label>參與人員 (請用半形逗號分隔名字)</label>
-                        <textarea name="members" rows="3" required placeholder="鈴噹, Draumr, 大鯊魚, 哭雲, 拉姆..."></textarea>
+                        <textarea name="members" rows="3" required placeholder="玩家A, 玩家B, 玩家C..."></textarea>
                     </div>
                     <div class="form-group">
                         <label>售出總金額 (若尚未售出可先填 0)</label>
@@ -309,6 +309,8 @@ HTML_TEMPLATE = """
                         {% endif %}
                     </td>
                 </tr>
+                {% else %}
+                <tr><td colspan="7" style="text-align:center; color:var(--text-muted); padding: 30px;">目前沒有任何分錢明細記錄。</td></tr>
                 {% endfor %}
             </table>
         </div>
@@ -370,7 +372,6 @@ def create_loot():
                 (project_id, m, item_name, per_person, leader_name)
             )
     else:
-        # 尚未售出，存入 pending
         cursor.execute(
             "INSERT INTO loot_projects (leader_name, item_name, loot_date, members, total_price, tax_rate, status) VALUES (?, ?, ?, ?, ?, ?, 'pending')",
             (leader_name, item_name, loot_date, members_raw, 0, tax_rate)
