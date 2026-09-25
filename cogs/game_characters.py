@@ -11,7 +11,6 @@ import os
 
 DB_FILE = "guild_database.db"
 
-# 🔗 Google 試算表設定
 SPREADSHEET_ID = "12AP1pzhqeskwhYY5piaYGasRNifLdCpgoddjxVM5yg4"
 CREDENTIALS_FILE = "service_account.json"
 TARGET_WORKSHEET_NAME = "請假紀錄"
@@ -82,7 +81,7 @@ def sync_leaves_to_sheet():
         print(f"⚠️ [試算表同步失敗]: {e}")
         return False
 
-class LeaveModal(discord.ui.Modal, title="📝 填寫公會請假單"):
+class LeaveModal(discord.ui.Modal, title="填寫公會請假單"):
     start_date_input = discord.ui.TextInput(
         label="開始日期 (格式: 月/日)",
         placeholder="例如：9/10",
@@ -97,7 +96,7 @@ class LeaveModal(discord.ui.Modal, title="📝 填寫公會請假單"):
     )
     reason_input = discord.ui.TextInput(
         label="請假原因",
-        placeholder="例如：家裡有事、期末考、加班等...",
+        placeholder="請輸入請假原因...",
         style=discord.TextStyle.paragraph,
         required=True,
         max_length=300
@@ -108,11 +107,10 @@ class LeaveModal(discord.ui.Modal, title="📝 填寫公會請假單"):
             start_date = self.start_date_input.value.strip()
             end_date = self.end_date_input.value.strip()
 
-            # 🔒 嚴格檢查日期格式 (防呆：例如 9999 或亂打會被直接擋下)
             date_pattern = re.compile(r"^([1-9]|1[0-2])/([1-9]|[1-2][0-9]|3[0-1])$")
             if not date_pattern.match(start_date) or not date_pattern.match(end_date):
                 await interaction.response.send_message(
-                    "❌ **日期格式錯誤！** 請確實填寫類似 `9/10` 或 `09/15` 的有效日期格式，不要亂填數字喔 XD",
+                    "❌ **日期格式錯誤！** 請確實填寫類似 `9/10` 或 `09/15` 的有效格式。",
                     ephemeral=True
                 )
                 return
@@ -133,7 +131,7 @@ class LeaveModal(discord.ui.Modal, title="📝 填寫公會請假單"):
             sync_leaves_to_sheet()
 
             embed = discord.Embed(
-                title="📄 【新請假申請待審核】",
+                title="新請假申請待審核",
                 color=discord.Color.orange()
             )
             embed.add_field(name="請假成員", value=interaction.user.mention, inline=False)
@@ -192,7 +190,7 @@ class LeaveReviewView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="✅ 批准請假", style=discord.ButtonStyle.success, custom_id="leave_approve_btn_v5")
+    @discord.ui.button(label="批准請假", style=discord.ButtonStyle.success, custom_id="leave_approve_btn_v5")
     async def approve_leave(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message("❌ 只有管理員可以審核請假！", ephemeral=True)
@@ -200,7 +198,7 @@ class LeaveReviewView(discord.ui.View):
 
         embed = interaction.message.embeds[0]
         embed.color = discord.Color.green()
-        embed.title = "✅ 【請假已批准】"
+        embed.title = "請假已批准"
         embed.add_field(name="審核者", value=interaction.user.mention, inline=False)
 
         target_discord_id = int(embed.footer.text.split("ID: ")[-1])
@@ -219,7 +217,7 @@ class LeaveReviewView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=self)
         await interaction.followup.send(f"✅ 已經批准了該位成員的請假申請（已同步至 Google 試算表）。", ephemeral=True)
 
-    @discord.ui.button(label="❌ 駁回申請", style=discord.ButtonStyle.danger, custom_id="leave_reject_btn_v5")
+    @discord.ui.button(label="駁回申請", style=discord.ButtonStyle.danger, custom_id="leave_reject_btn_v5")
     async def reject_leave(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not interaction.user.guild_permissions.administrator:
             await interaction.response.send_message("❌ 只有管理員可以審核請假！", ephemeral=True)
@@ -227,7 +225,7 @@ class LeaveReviewView(discord.ui.View):
 
         embed = interaction.message.embeds[0]
         embed.color = discord.Color.red()
-        embed.title = "❌ 【請假已駁回】"
+        embed.title = "請假已駁回"
         embed.add_field(name="審核者", value=interaction.user.mention, inline=False)
 
         target_discord_id = int(embed.footer.text.split("ID: ")[-1])
@@ -315,4 +313,101 @@ def generate_calendar_text(guild):
 
     if current_week:
         cal_str += current_week + "\n"
-    cal_str += "
+    cal_str += "```"
+
+    cal_str += "\n**📌 當月請假名單對照：**\n"
+    if not leave_days:
+        cal_str += "• 本月目前沒有成員請假。\n"
+    else:
+        for d in sorted(leave_days.keys()):
+            names_str = ", ".join(leave_days[d])
+            cal_str += f"• **{month}/{d}**：{names_str}\n"
+
+    return cal_str
+
+class PersistentLeaveView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="點擊填寫請假單", style=discord.ButtonStyle.green, custom_id="persistent_leave_btn_main_v3")
+    async def open_leave_modal(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = LeaveModal()
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="重新整理方格月曆", style=discord.ButtonStyle.blurple, custom_id="persistent_leave_calendar_btn_v3")
+    async def show_calendar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        calendar_view_text = generate_calendar_text(interaction.guild)
+        await interaction.response.send_message(calendar_view_text, ephemeral=True)
+
+class LeaveSystemCog(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        self.auto_clean_expired_leaves.start()
+
+    def cog_unload(self):
+        self.auto_clean_expired_leaves.cancel()
+
+    @tasks.loop(hours=24)
+    async def auto_clean_expired_leaves(self):
+        try:
+            now = datetime.now()
+            current_year = now.year
+
+            conn = sqlite3.connect(DB_FILE)
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, end_date FROM leaves WHERE status LIKE '%批准%'")
+            rows = cursor.fetchall()
+
+            expired_ids = []
+            for leave_id, end_date_str in rows:
+                try:
+                    m, d = map(int, end_date_str.replace("月", "/").replace("日", "").split("/"))
+                    end_dt = datetime(current_year, m, d, 23, 59, 59)
+                    if now > end_dt:
+                        expired_ids.append(leave_id)
+                except Exception:
+                    pass
+
+            if expired_ids:
+                cursor.executemany("DELETE FROM leaves WHERE id = ?", [(lid,) for lid in expired_ids])
+                conn.commit()
+                print(f"🧹 [自動清理] 已成功清除 {len(expired_ids)} 筆過期的請假紀錄。")
+
+            conn.close()
+
+            if expired_ids:
+                sync_leaves_to_sheet()
+
+        except Exception as e:
+            print(f"⚠️ [自動清理任務錯誤]: {e}")
+
+    @auto_clean_expired_leaves.before_loop
+    async def before_auto_clean(self):
+        await self.bot.wait_until_ready()
+
+    @app_commands.command(name="架設請假面板", description="【管理員】在當前頻道發送常駐的請假按鈕與方格月曆面板")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def setup_leave_panel(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="公會請假與方格行事曆",
+            description="歡迎來到請假專區！如果有事需要請假，請點擊下方的綠色按鈕填寫假單。",
+            color=discord.Color.green()
+        )
+        view = PersistentLeaveView()
+        await interaction.channel.send(embed=embed, view=view)
+        await interaction.response.send_message("✅ 請假常駐面板已成功架設！", ephemeral=True)
+
+    @app_commands.command(name="手動同步試算表", description="【管理員】立即將資料庫所有請假紀錄強制同步至 Google 試算表")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def manual_sync_sheet(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        success = sync_leaves_to_sheet()
+        if success:
+            await interaction.followup.send("📊 **成功！** 已將所有請假紀錄同步至 Google 試算表的分頁「`請假紀錄`」。", ephemeral=True)
+        else:
+            await interaction.followup.send("❌ **同步失敗**，請檢查後台主控台錯誤訊息與 `service_account.json` 權限。", ephemeral=True)
+
+async def setup(bot):
+    bot.add_view(PersistentLeaveView())
+    bot.add_view(LeaveReviewView())
+    await bot.add_cog(LeaveSystemCog(bot))
