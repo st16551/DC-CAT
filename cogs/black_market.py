@@ -39,6 +39,27 @@ BLACK_MARKET_ITEMS = {
 }
 
 
+def safe_modify_balance(user_id, amount):
+  """🛡️ 萬能安全扣款包裝函式：自動相容各種不同的 modify_balance 參數定義"""
+  try:
+    return modify_balance(user_id, amount)
+  except TypeError:
+    try:
+      return modify_balance(user_id, amount, tx_type="black_market", sender_id="BLACK_MARKET")
+    except TypeError:
+      try:
+        return modify_balance(str(user_id), int(amount))
+      except Exception as e:
+        print(f"❌ 扣款執行失敗: {e}")
+        return False
+    except Exception as e:
+      print(f"❌ 扣款執行失敗: {e}")
+      return False
+  except Exception as e:
+    print(f"❌ 扣款執行失敗: {e}")
+    return False
+
+
 class TargetDebuffModal(discord.ui.Modal):
 
   def __init__(self, cost, debuff_type, item_name, hours):
@@ -93,12 +114,7 @@ class TargetDebuffModal(discord.ui.Modal):
     if self.debuff_type == "broadcast":
       broadcast_content = self.target_name.value.strip()
 
-      success = modify_balance(
-          user_id,
-          -self.cost,
-          tx_type="buy_broadcast",
-          sender_id="BLACK_MARKET",
-      )
+      success = safe_modify_balance(user_id, -self.cost)
       if not success:
         await interaction.followup.send(
             "❌ 扣款失敗，請稍後再試或聯繫管理員。", ephemeral=True
@@ -167,12 +183,7 @@ class TargetDebuffModal(discord.ui.Modal):
       return
 
     # 2. 執行安全扣款
-    success = modify_balance(
-        user_id,
-        -self.cost,
-        tx_type=f"buy_{self.debuff_type}",
-        sender_id="BLACK_MARKET",
-    )
+    success = safe_modify_balance(user_id, -self.cost)
     if not success:
       await interaction.followup.send(
           "❌ 扣款失敗，請稍後再試或聯繫管理員。", ephemeral=True
@@ -194,23 +205,13 @@ class TargetDebuffModal(discord.ui.Modal):
             "❌ 機器人權限不足或身分組低於對方，無法改名！已全額退款。",
             ephemeral=True,
         )
-        modify_balance(
-            user_id,
-            self.cost,
-            tx_type="refund_rename_fail",
-            sender_id="BLACK_MARKET",
-        )
+        safe_modify_balance(user_id, self.cost)
         return
       except discord.HTTPException as e:
         await interaction.followup.send(
             f"❌ 改名失敗 ({e})！已全額退款。", ephemeral=True
         )
-        modify_balance(
-            user_id,
-            self.cost,
-            tx_type="refund_rename_fail",
-            sender_id="BLACK_MARKET",
-        )
+        safe_modify_balance(user_id, self.cost)
         return
 
     # 3. 寫入資料庫記錄狀態（支援跨重啟與背景檢查）
@@ -322,8 +323,12 @@ class BlackMarketCog(commands.Cog):
     """每分鐘自動檢查並解除過期的詛咒與強制改名狀態"""
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, guild_id, user_id, type, old_nickname, expire_at FROM active_debuffs")
-    rows = cursor.fetchall()
+    try:
+      cursor.execute("SELECT id, guild_id, user_id, type, old_nickname, expire_at FROM active_debuffs")
+      rows = cursor.fetchall()
+    except Exception:
+      conn.close()
+      return
 
     now = datetime.now()
     for row in rows:
@@ -331,7 +336,7 @@ class BlackMarketCog(commands.Cog):
       try:
         expire_at = datetime.fromisoformat(expire_at_str)
       except Exception:
-        expire_at = now  # 格式錯誤直接清除
+        expire_at = now
 
       if now >= expire_at:
         guild = self.bot.get_guild(guild_id)
@@ -353,7 +358,6 @@ class BlackMarketCog(commands.Cog):
             except Exception:
               pass
 
-        # 從資料庫移除該筆過期狀態
         cursor.execute("DELETE FROM active_debuffs WHERE id = ?", (row_id,))
         conn.commit()
 
@@ -367,7 +371,6 @@ class BlackMarketCog(commands.Cog):
       name="黑市", description="開啟地下黑市，購買整人與詛咒道具"
   )
   async def black_market(self, interaction: discord.Interaction):
-    # 🛡️ 立即回報 Discord 正在處理，防止 3 秒逾時 (10062 Unknown interaction)
     await interaction.response.defer(ephemeral=True)
 
     embed = discord.Embed(
@@ -389,11 +392,7 @@ class BlackMarketCog(commands.Cog):
         inline=False,
     )
     view = BlackMarketView()
-    
-    # 搭配 defer 使用 followup 發送
-    await interaction.followup.send(
-        embed=embed, view=view, ephemeral=True
-    )
+    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
 async def setup(bot):
