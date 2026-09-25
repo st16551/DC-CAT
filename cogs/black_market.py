@@ -4,6 +4,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 from datetime import datetime, timedelta
+
+# 假設這些是你原本在 utils.py 中的函式，請確保有正確匯入
 from utils import get_wallet_balance, modify_balance, get_db_connection
 
 # 已經根據平衡性調整過價格與時效的黑市道具清單
@@ -11,14 +13,14 @@ BLACK_MARKET_ITEMS = {
     "broadcast": {
         "name": "全群廣播 / 大聲公",
         "price": 350,
-        "hours": 0,  # 立即性消耗道具，無持續時間
+        "hours": 0,
         "type": "broadcast",
-        "description": "向當前頻道廣播你的重要訊息"
+        "description": "向全群廣播你的重要訊息（約 1 週產出）"
     },
     "rename_card": {
         "name": "強制改名卡",
         "price": 550,
-        "hours": 24,  # 持續 24 小時自動還原
+        "hours": 24,
         "type": "rename",
         "description": "強制更改受害者名字 24 小時"
     },
@@ -75,7 +77,6 @@ class TargetDebuffModal(discord.ui.Modal):
         await interaction.response.defer(ephemeral=True)
         user_id = str(interaction.user.id)
 
-        # 1. 再次檢查錢包餘額
         current_coins = get_wallet_balance(user_id)
         if current_coins < self.cost:
             await interaction.followup.send(f"❌ 你的 SU 幣不足！購買【{self.item_name}】需要 `{self.cost} SU幣`，你目前只有 `{current_coins} SU幣`。", ephemeral=True)
@@ -83,7 +84,6 @@ class TargetDebuffModal(discord.ui.Modal):
 
         guild = interaction.guild
 
-        # 處理「全群廣播」的特殊邏輯
         if self.debuff_type == "broadcast":
             broadcast_content = self.target_name.value.strip()
 
@@ -102,7 +102,6 @@ class TargetDebuffModal(discord.ui.Modal):
                 )
             return
 
-        # 解析並尋找目標成員
         target_str = self.target_name.value.strip()
         target_member = None
 
@@ -143,7 +142,6 @@ class TargetDebuffModal(discord.ui.Modal):
             await interaction.followup.send("❌ 不能對自己施展詛咒！", ephemeral=True)
             return
 
-        # 2. 執行安全扣款
         success = modify_balance(user_id, -self.cost, tx_type=f"buy_{self.debuff_type}", sender_id="BLACK_MARKET")
         if not success:
             await interaction.followup.send("❌ 扣款失敗，請稍後再試或聯繫管理員。", ephemeral=True)
@@ -151,7 +149,6 @@ class TargetDebuffModal(discord.ui.Modal):
 
         old_nick = target_member.display_name
 
-        # 如果是強制改名卡
         if self.debuff_type == "rename":
             new_nick = self.new_nickname.value.strip()
             try:
@@ -165,10 +162,10 @@ class TargetDebuffModal(discord.ui.Modal):
                 modify_balance(user_id, self.cost, tx_type="refund_rename_fail", sender_id="BLACK_MARKET")
                 return
 
-        # 3. 記錄詛咒狀態到 SQLite 資料庫中
         key = f"{guild.id}_{target_member.id}"
         expire_at_str = (datetime.now() + timedelta(hours=self.hours)).isoformat()
 
+        # 將狀態寫入 SQLite 資料庫 (確保重啟不消失)
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("""
@@ -195,20 +192,26 @@ class TargetDebuffModal(discord.ui.Modal):
         if interaction.channel:
             await interaction.channel.send(f"🔮 **【黑市詛咒】** {interaction.user.mention} 成功對 **{target_member.display_name}** 施展了 **{self.item_name}**！")
 
-class BlackMarketSelect(discord.ui.Select):
+class BlackMarketView(discord.ui.View):
     def __init__(self):
-        options = [
+        super().__init__(timeout=None)
+
+    # ✅ 關鍵修復：使用裝飾器綁定 Select，解決點擊沒反應的問題
+    @discord.ui.select(
+        placeholder="點此選購黑市整人道具...",
+        min_values=1,
+        max_values=1,
+        options=[
             discord.SelectOption(
-                label=item["name"], 
-                description=f"售價: {item['price']} SU幣 | {item['description']}", 
+                label=item["name"],
+                description=f"售價: {item['price']} SU幣 | {item['description']}",
                 value=key
             )
             for key, item in BLACK_MARKET_ITEMS.items()
         ]
-        super().__init__(placeholder="點此選購黑市整人道具...", min_values=1, max_values=1, options=options)
-
-    async def callback(self, interaction: discord.Interaction):
-        item_key = self.values[0]
+    )
+    async def select_callback(self, interaction: discord.Interaction, select: discord.ui.Select):
+        item_key = select.values[0]
         item = BLACK_MARKET_ITEMS[item_key]
         user_id = str(interaction.user.id)
 
@@ -229,11 +232,6 @@ class BlackMarketSelect(discord.ui.Select):
             )
         )
 
-class BlackMarketView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-        self.add_item(BlackMarketSelect())
-
 class BlackMarketCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -243,6 +241,7 @@ class BlackMarketCog(commands.Cog):
     def cog_unload(self):
         self.check_debuffs_task.cancel()
 
+    # Webhook 代理發言 (用於倒裝句與馬賽克)
     async def get_or_create_webhook(self, channel):
         if channel.id in self.webhook_cache:
             webhook = self.webhook_cache[channel.id]
@@ -261,14 +260,19 @@ class BlackMarketCog(commands.Cog):
         except Exception:
             return None
 
-    # 背景任務：每分鐘檢查過期狀態並自動還原
+    # ✅ 每分鐘定時檢查詛咒是否過期並還原 (解決永久卡住的問題)
     @tasks.loop(minutes=1)
     async def check_debuffs_task(self):
         now = datetime.now()
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        cursor.execute("SELECT id, guild_id, user_id, type, old_nickname, expire_at FROM active_debuffs")
+        try:
+            cursor.execute("SELECT id, guild_id, user_id, type, old_nickname, expire_at FROM active_debuffs")
+        except Exception:
+            conn.close()
+            return # 若資料表還沒建立則跳過
+
         rows = cursor.fetchall()
         expired_ids = []
 
@@ -314,7 +318,7 @@ class BlackMarketCog(commands.Cog):
     async def before_check_debuffs(self):
         await self.bot.wait_until_ready()
 
-    # 監聽被施加詛咒者的發言（倒裝句、馬賽克）
+    # ✅ 監聽受害者發言，將訊息替換為倒裝句或馬賽克
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot or not message.guild:
@@ -322,8 +326,11 @@ class BlackMarketCog(commands.Cog):
 
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT type, expire_at FROM active_debuffs WHERE guild_id = ? AND user_id = ?", (message.guild.id, message.author.id))
-        row = cursor.fetchone()
+        try:
+            cursor.execute("SELECT type, expire_at FROM active_debuffs WHERE guild_id = ? AND user_id = ?", (message.guild.id, message.author.id))
+            row = cursor.fetchone()
+        except Exception:
+            row = None
         conn.close()
 
         if not row:
@@ -333,7 +340,7 @@ class BlackMarketCog(commands.Cog):
         expire_at = datetime.fromisoformat(row["expire_at"])
 
         if datetime.now() >= expire_at:
-            return  # 時間到了由背景任務清理
+            return
 
         if debuff_type not in ["reverse", "mosaic"]:
             return
@@ -342,18 +349,17 @@ class BlackMarketCog(commands.Cog):
         if not content:
             return
 
-        # 處理詛咒轉換效果
+        # 套用詛咒效果
         if debuff_type == "reverse":
-            # 倒裝句處理
             content = content[::-1]
         elif debuff_type == "mosaic":
-            # 隨機馬賽克處理
             chars = list(content)
             for i in range(len(chars)):
                 if chars[i].strip() and random.random() < 0.4:
                     chars[i] = "█"
             content = "".join(chars)
 
+        # 刪除原訊息並透過 Webhook 代理發送
         try:
             await message.delete()
         except Exception:
@@ -402,8 +408,11 @@ class BlackMarketCog(commands.Cog):
         
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT type, old_nickname, expire_at FROM active_debuffs WHERE guild_id = ? AND user_id = ?", (guild.id, user.id))
-        row = cursor.fetchone()
+        try:
+            cursor.execute("SELECT type, old_nickname, expire_at FROM active_debuffs WHERE guild_id = ? AND user_id = ?", (guild.id, user.id))
+            row = cursor.fetchone()
+        except Exception:
+            row = None
         conn.close()
 
         if not row:
