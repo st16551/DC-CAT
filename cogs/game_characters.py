@@ -286,7 +286,6 @@ class LeaveCog(commands.Cog):
 
     def __init__(self, bot):
         self.bot = bot
-        # 註冊常駐視圖，確保重啟後按鈕依然有效
         self.bot.add_view(PersistentLeaveButtonView())
         self.bot.add_view(LeaveReviewView())
 
@@ -296,7 +295,6 @@ class LeaveCog(commands.Cog):
     async def request_leave(self, interaction: discord.Interaction):
         await interaction.response.send_modal(LeaveModal())
 
-    # 📌 管理員專用指令：用來在指定頻道發送「常駐請假卡片」
     @app_commands.command(
         name="架設請假面板", description="在當前頻道發送常駐請假按鈕面板"
     )
@@ -313,6 +311,75 @@ class LeaveCog(commands.Cog):
         await interaction.channel.send(embed=embed, view=view)
         await interaction.response.send_message(
             "✅ 已成功在此頻道架設常駐請假面板！", ephemeral=True
+        )
+
+    # 📌 管理員專用：下載包含請假時間的完整試算表報表
+    @app_commands.command(
+        name="下載請假報表", description="【管理員專用】下載包含 Discord 資訊與請假時間的試算表檔案"
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def download_leave_report(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # 抓取使用者基本資料，並透過 LEFT JOIN 取得其最新的請假區間（可根據你的資料庫表格調整欄位名稱）
+        # 假設你的使用者資料表叫 users，內含 discord_id, game_name, profession, sub_guild, joined_at 等欄位
+        try:
+            cursor.execute("""
+                u.discord_id, u.discord_name, u.game_name, u.profession, u.sub_guild, u.joined_at,
+                l.start_date, l.end_date
+                FROM users u
+                LEFT JOIN leaves l ON u.discord_id = l.discord_id AND l.status = '已批准'
+            """)
+            rows = cursor.fetchall()
+        except Exception:
+            # 如果資料庫結構不同，退回單純抓取 leaves 與對應的使用者資訊
+            cursor.execute("""
+                SELECT u.discord_id, l.start_date, l.end_date 
+                FROM users u 
+                LEFT JOIN leaves l ON u.discord_id = l.discord_id
+            """)
+            rows = cursor.fetchall()
+            
+        conn.close()
+
+        # 建立 CSV 檔案內容（使用 utf-8-sig 讓 Excel 能夠正確讀取中文）
+        csv_output = io.StringIO()
+        # 寫入對應你截圖的表頭，最後面多加「請假時間」
+        csv_output.write("Discord ID,Discord 帳號,遊戲角色 ID,職業,分配分會,入會時間,請假時間\n")
+
+        for row in rows:
+            # 兼容不同的欄位長度防呆
+            discord_id = row[0] if len(row) > 0 else ""
+            
+            # 試著從 Discord 伺服器取得即時的帳號名稱
+            member = interaction.guild.get_member(discord_id)
+            discord_name = member.name if member else str(discord_id)
+            
+            game_name = row[2] if len(row) > 2 and row[2] else "-"
+            profession = row[3] if len(row) > 3 and row[3] else "-"
+            sub_guild = row[4] if len(row) > 4 and row[4] else "-"
+            joined_at = row[5] if len(row) > 5 and row[5] else "-"
+            
+            start_date = row[6] if len(row) > 6 and row[6] else ""
+            end_date = row[7] if len(row) > 7 and row[7] else ""
+            
+            # 組合請假時間格式 (例如 7/10~7/30)，若無請假則空白
+            leave_time_str = f"{start_date}~{end_date}" if start_date and end_date else ""
+
+            csv_output.write(f'"{discord_id}","{discord_name}","{game_name}","{profession}","{sub_guild}","{joined_at}","{leave_time_str}"\n')
+
+        # 轉換成二進位檔案串流準備上傳
+        file_bytes = io.BytesIO(csv_output.getvalue().encode("utf-8-sig"))
+        file_bytes.seek(0)
+        
+        discord_file = discord.File(file_bytes, filename="guild_leave_report.csv")
+        await interaction.followup.send(
+            "✅ **以下是為你產生的公會與請假試算表報表：**\n你可以直接下載此 `.csv` 檔案並用 Excel 或 Google 試算表開啟。",
+            file=discord_file,
+            ephemeral=True
         )
 
 
