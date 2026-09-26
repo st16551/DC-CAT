@@ -1,6 +1,6 @@
 # ==================================================
 # 檔案名稱：cogs/feedback.py
-# 檔案用途：公會意見回饋箱與幹部審核討論系統（結合 SQLite 絕對路徑防護版）
+# 檔案用途：公會意見回饋箱與幹部審核討論系統（結合 SQLite 絕對路徑防護與自動補欄位版）
 # ==================================================
 
 import discord
@@ -10,9 +10,11 @@ from datetime import datetime
 from utils.database import get_db_connection  # 🛡️ 引入統一的絕對路徑連線工具
 
 def init_feedback_table():
-    """確保資料庫中存在意見箱表格"""
+    """確保資料庫中存在意見箱表格，若舊表缺少欄位則自動補齊"""
     conn = get_db_connection()
     cursor = conn.cursor()
+    
+    # 1. 建立基本表格（防呆：若不存在才建）
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS feedbacks (
             feedback_id TEXT PRIMARY KEY,
@@ -24,16 +26,28 @@ def init_feedback_table():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    
+    # 2. 自動檢查舊資料庫是否缺少 author_id / author_name 欄位，若缺少則自動補上
+    cursor.execute("PRAGMA table_info(feedbacks);")
+    existing_columns = [col[1] for col in cursor.fetchall()]
+
+    if "author_id" not in existing_columns:
+        cursor.execute("ALTER TABLE feedbacks ADD COLUMN author_id INTEGER;")
+    if "author_name" not in existing_columns:
+        cursor.execute("ALTER TABLE feedbacks ADD COLUMN author_name TEXT;")
+    if "handler" not in existing_columns:
+        cursor.execute("ALTER TABLE feedbacks ADD COLUMN handler TEXT;")
+
     conn.commit()
     conn.close()
 
-# 模組載入時自動檢查並建立表格
+# 模組載入時自動檢查並建立/升級表格
 init_feedback_table()
 
 # 【請設定】相關頻道與身分組 ID
 ADMIN_FEEDBACK_CHANNEL_ID = 1548345803397926963  # 意見箱審核專區頻道 ID
 DISCUSSION_CHANNEL_ID = 1550397740146626650      # 意見採納後的討論頻道 ID (請確保這裡填的是論壇頻道的 ID)
-ADMIN_ROLE_ID = 1527550559798951946               # 要被 @ 叫出來討論的幹部身分組 ID
+ADMIN_ROLE_ID = 1527550559798951946                # 要被 @ 叫出來討論的幹部身分組 ID
 
 class FeedbackModal(discord.ui.Modal, title="📬 填寫公會意見回饋"):
     feedback_input = discord.ui.TextInput(
@@ -159,7 +173,6 @@ class FeedbackReviewView(discord.ui.View):
 
                 # 判斷如果該頻道是「論壇頻道 (ForumChannel)」，使用 create_thread 建立貼文
                 if isinstance(discussion_channel, discord.ForumChannel):
-                    # 貼文標題取意見的前 20 個字作為摘要
                     thread_title = f"【意見討論】{embed.description[:20]}..."
                     
                     await discussion_channel.create_thread(
@@ -169,7 +182,6 @@ class FeedbackReviewView(discord.ui.View):
                     )
                     print("✅ 成功在論壇頻道建立新貼文！")
                 else:
-                    # 如果不小心填成一般文字頻道，則用原本的 send
                     await discussion_channel.send(
                         content=f"🔔 {role_mention} 有新的採納意見已轉發至此，請在此進行後續討論與追蹤：", 
                         embed=discussion_embed
@@ -264,7 +276,9 @@ class FeedbackCog(commands.Cog):
 
     @app_commands.command(name="架設意見箱", description="【管理員】在當前頻道發送常駐的意見箱填寫面板")
     @app_commands.checks.has_permissions(administrator=True)
-    async def setup_feedback_panel(self, interaction: discord.InputInteraction if hasattr(discord, 'InputInteraction') else discord.Interaction):
+    async def setup_feedback_panel(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        
         embed = discord.Embed(
             title="📬 靈谷公會 - 意見回饋箱",
             description="對公會有任何想法、建議或想反映的事項嗎？\n"
@@ -273,7 +287,7 @@ class FeedbackCog(commands.Cog):
         )
         view = PersistentFeedbackView()
         await interaction.channel.send(embed=embed, view=view)
-        await interaction.response.send_message("✅ 意見箱常駐面板已成功架設！", ephemeral=True)
+        await interaction.followup.send("✅ 意見箱常駐面板已成功架設！", ephemeral=True)
 
 
 async def setup(bot):
