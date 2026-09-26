@@ -101,7 +101,7 @@ class EditSplitModal(discord.ui.Modal, title="設定/修改戰利品分錢資訊
         self.view_obj.per_person = per_person
         self.view_obj.update_buttons()
 
-        # 🛠️ 同步更新資料庫：同時更新 loot_projects (總金額) 與 split_records
+        # 🛠️ 同步更新資料庫：同時更新 loot_projects 與 split_records
         try:
             conn = sqlite3.connect("guild_database.db")
             cursor = conn.cursor()
@@ -246,22 +246,23 @@ class SplitMoneyView(discord.ui.View):
             style = discord.ButtonStyle.success if is_claimed else discord.ButtonStyle.secondary
             label = f"☑ {member} (已領)" if is_claimed else f"☐ {member} (未領)"
             
-            button = SplitButton(member, label, style)
+            # 💡 確保每個成員按鈕都有帶入 project_id 的專屬 custom_id，避免重新整理時 View 關聯失效
+            button = SplitButton(member, label, style, self.project_id)
             self.add_item(button)
 
-        voice_grab_btn = discord.ui.Button(label="🎙️ 抓取語音房成員", style=discord.ButtonStyle.success, row=3, custom_id="persistent_grab_voice_btn")
+        voice_grab_btn = discord.ui.Button(label="🎙️ 抓取語音房成員", style=discord.ButtonStyle.success, row=3, custom_id=f"persistent_grab_voice_{self.project_id}")
         voice_grab_btn.callback = self.grab_voice_members
         self.add_item(voice_grab_btn)
 
-        add_member_btn = discord.ui.Button(label="➕ 快速補人/調動", style=discord.ButtonStyle.secondary, row=3, custom_id="persistent_add_member_btn")
+        add_member_btn = discord.ui.Button(label="➕ 快速補人/調動", style=discord.ButtonStyle.secondary, row=3, custom_id=f"persistent_add_member_{self.project_id}")
         add_member_btn.callback = self.open_add_member_selector
         self.add_item(add_member_btn)
 
-        edit_btn = discord.ui.Button(label="✏️ 編輯品項/金額", style=discord.ButtonStyle.primary, row=4, custom_id="persistent_edit_split_btn")
+        edit_btn = discord.ui.Button(label="✏️ 編輯品項/金額", style=discord.ButtonStyle.primary, row=4, custom_id=f"persistent_edit_split_{self.project_id}")
         edit_btn.callback = self.edit_split_info
         self.add_item(edit_btn)
 
-        ping_btn = discord.ui.Button(label="📢 催繳通知未領者", style=discord.ButtonStyle.secondary, row=4, custom_id="persistent_ping_unclaimed_btn")
+        ping_btn = discord.ui.Button(label="📢 催繳通知未領者", style=discord.ButtonStyle.secondary, row=4, custom_id=f"persistent_ping_unclaimed_{self.project_id}")
         ping_btn.callback = self.ping_unclaimed
         self.add_item(ping_btn)
 
@@ -362,8 +363,8 @@ class SplitMoneyView(discord.ui.View):
 
 
 class SplitButton(discord.ui.Button):
-    def __init__(self, member_name, label, style):
-        super().__init__(label=label, style=style, custom_id=f"split_btn_{member_name}")
+    def __init__(self, member_name, label, style, project_id):
+        super().__init__(label=label, style=style, custom_id=f"split_btn_{project_id}_{member_name}")
         self.member_name = member_name
 
     async def callback(self, interaction: discord.Interaction):
@@ -448,7 +449,6 @@ class SplitSystem(commands.Cog):
         try:
             conn = sqlite3.connect("guild_database.db")
             cursor = conn.cursor()
-            # 同步在網頁端的 loot_projects 建立一筆主專案
             cursor.execute(
                 """
                 INSERT INTO loot_projects 
@@ -459,7 +459,6 @@ class SplitSystem(commands.Cog):
             )
             project_id = cursor.lastrowid
 
-            # 同步建立帶有 project_id 外鍵的分錢明細
             for name in members:
                 cursor.execute(
                     """
