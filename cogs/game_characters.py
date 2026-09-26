@@ -165,6 +165,22 @@ class LeaveModal(discord.ui.Modal, title="📝 填寫公會請假單"):
                 pass
 
 
+# 📌 常駐型請假按鈕面板（點擊後開啟 Modal）
+class PersistentLeaveButtonView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)  # 永久常駐
+
+    @discord.ui.button(
+        label="📝 點此填寫請假單",
+        style=discord.ButtonStyle.primary,
+        custom_id="persistent_leave_modal_btn",
+    )
+    async def open_leave_modal(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ):
+        await interaction.response.send_modal(LeaveModal())
+
+
 class LeaveReviewView(discord.ui.View):
 
     def __init__(self):
@@ -266,83 +282,38 @@ class LeaveReviewView(discord.ui.View):
             )
 
 
-def generate_calendar_text(guild):
-    now = datetime.now()
-    year = now.year
-    month = now.month
-
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT discord_id, start_date, end_date FROM leaves WHERE status = '審核中' OR status LIKE '%批准%'"
-    )
-    rows = cursor.fetchall()
-    conn.close()
-
-    leave_days = {}
-    for discord_id, start_str, end_str in rows:
-        member = guild.get_member(discord_id)
-        name = member.display_name if member else "某員"
-        try:
-            s_m, s_d = map(
-                int, start_str.replace("月", "/").replace("日", "").split("/")
-            )
-            e_m, e_d = map(
-                int, end_str.replace("月", "/").replace("日", "").split("/")
-            )
-            if s_m == month:
-                for d in range(s_d, e_d + 1):
-                    if d not in leave_days:
-                        leave_days[d] = set()
-                    leave_days[d].add(name)
-        except Exception:
-            pass
-
-    cal_str = f"```text\n      {year} 年 {month} 月行事曆\n"
-    cal_str += "日   一   二   三   四   五   六\n"
-    cal_str += "---------------------------------\n"
-
-    first_day = datetime(year, month, 1)
-    start_weekday = first_day.weekday()
-    start_weekday = (start_weekday + 1) % 7
-
-    if month == 12:
-        next_month = datetime(year + 1, 1, 1)
-    else:
-        next_month = datetime(year, month + 1, 1)
-    total_days = (next_month - first_day).days
-
-    current_week = ""
-    for _ in range(start_weekday):
-        current_week += "      "
-
-    for day in range(1, total_days + 1):
-        day_str = f"{day:2d}"
-        if day in leave_days:
-            current_week += f"{day_str}📌 "
-        else:
-            current_week += f"{day_str}   "
-
-        if len(current_week) >= 35 or (start_weekday + day) % 7 == 0:
-            cal_str += current_week + "\n"
-            current_week = ""
-
-    if current_week:
-        cal_str += current_week + "\n"
-    cal_str += "```"
-    return cal_str
-
-
 class LeaveCog(commands.Cog):
 
     def __init__(self, bot):
         self.bot = bot
+        # 註冊常駐視圖，確保重啟後按鈕依然有效
+        self.bot.add_view(PersistentLeaveButtonView())
+        self.bot.add_view(LeaveReviewView())
 
     @app_commands.command(
         name="請假", description="填寫並送出您的公會請假單"
     )
     async def request_leave(self, interaction: discord.Interaction):
         await interaction.response.send_modal(LeaveModal())
+
+    # 📌 管理員專用指令：用來在指定頻道發送「常駐請假卡片」
+    @app_commands.command(
+        name="架設請假面板", description="在當前頻道發送常駐請假按鈕面板"
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def setup_leave_panel(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="🏖️ 公會請假系統",
+            description=(
+                "如果需要請假，請點擊下方按鈕填寫請假單。\n送出後將由管理員進行審核，請耐心等候！"
+            ),
+            color=discord.Color.blue(),
+        )
+        view = PersistentLeaveButtonView()
+        await interaction.channel.send(embed=embed, view=view)
+        await interaction.response.send_message(
+            "✅ 已成功在此頻道架設常駐請假面板！", ephemeral=True
+        )
 
 
 async def setup(bot):
