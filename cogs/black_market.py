@@ -39,29 +39,22 @@ BLACK_MARKET_ITEMS = {
 }
 
 
-def safe_modify_balance(user_id, amount):
-  """🛡️ 萬能安全扣款防護：確保會員在資料庫有錢包記錄後才執行扣款"""
+def safe_modify_balance(user_id, user_name, amount):
+  """🛡️ 完美對應你專案 economy_helper 的扣款防護"""
   try:
-    uid = int(user_id)
+    uid = str(user_id)
+    name = str(user_name)
     amt = int(amount)
-
-    # 1. 自動防護：確保 member_levels 裡面一定有這個人的錢包紀錄，沒有就補創立
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT OR IGNORE INTO member_levels (discord_id, level, su_coins, messages_count, voice_hours, exp, max_exp) VALUES (?, 1, 0, 0, 0.0, 0, 100)",
-        (uid,),
-    )
-    conn.commit()
-    conn.close()
-
-    # 2. 執行原生扣款
-    try:
-      return modify_balance(uid, amt)
-    except TypeError:
-      return modify_balance(str(uid), amt)
+    
+    # 呼叫你專案中真正的 modify_balance (接收 discord_id, user_name, amount)
+    result = modify_balance(uid, name, amt)
+    
+    # modify_balance 回傳的是 dict: {"success": True/False, "new_balance": ...}
+    if isinstance(result, dict):
+      return result.get("success", False)
+    return bool(result)
   except Exception as e:
-    print(f"❌ 絕對防護扣款報錯: {e}")
+    print(f"❌ 扣款執行報錯: {e}")
     return False
 
 
@@ -101,6 +94,7 @@ class TargetDebuffModal(discord.ui.Modal):
   async def on_submit(self, interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     user_id = str(interaction.user.id)
+    user_name = interaction.user.display_name
 
     current_coins = get_wallet_balance(user_id)
     if current_coins < self.cost:
@@ -115,7 +109,8 @@ class TargetDebuffModal(discord.ui.Modal):
     if self.debuff_type == "broadcast":
       broadcast_content = self.target_name.value.strip()
 
-      success = safe_modify_balance(user_id, -self.cost)
+      # 修正：傳入正確的 3 個參數 (user_id, user_name, amount)
+      success = safe_modify_balance(user_id, user_name, -self.cost)
       if not success:
         await interaction.followup.send(
             "❌ 扣款失敗，請稍後再試或聯繫管理員。", ephemeral=True
@@ -180,7 +175,8 @@ class TargetDebuffModal(discord.ui.Modal):
       await interaction.followup.send("❌ 不能對自己施展詛咒！", ephemeral=True)
       return
 
-    success = safe_modify_balance(user_id, -self.cost)
+    # 執行扣款
+    success = safe_modify_balance(user_id, user_name, -self.cost)
     if not success:
       await interaction.followup.send(
           "❌ 扣款失敗，請稍後再試或聯繫管理員。", ephemeral=True
@@ -201,7 +197,7 @@ class TargetDebuffModal(discord.ui.Modal):
             "❌ 機器人權限不足或身分組低於對方，無法改名！已全額退款。",
             ephemeral=True,
         )
-        safe_modify_balance(user_id, self.cost)
+        safe_modify_balance(user_id, user_name, self.cost)  # 退款
         return
 
     key = f"{guild.id}_{target_member.id}"
