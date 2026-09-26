@@ -14,7 +14,7 @@ from discord import app_commands
 class DatabaseBackup(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.backup_channel_id = 1552166997746262057
+        self.backup_channel_id = 1553512571120656596
         self.db_path = "guild_database.db"
         
         # 🚀 啟動時不執行任何雲端存檔或覆蓋動作，保持本地乾淨
