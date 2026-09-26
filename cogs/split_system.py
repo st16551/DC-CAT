@@ -1,25 +1,56 @@
+import io
 import sqlite3
 import discord
 from discord import app_commands
 from discord.ext import commands
+import asyncio
+from datetime import datetime
 
 # ===================== 資料庫初始化安全檢查 =====================
 def init_db():
     try:
         conn = sqlite3.connect("guild_database.db")
         cursor = conn.cursor()
+        
+        # 1. 網頁端專用的打寶專案主表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS loot_projects (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                leader_name TEXT,
+                item_name TEXT,
+                loot_date TEXT,
+                members TEXT,
+                total_price REAL,
+                tax_rate REAL,
+                status TEXT DEFAULT 'pending',
+                updated_by TEXT,
+                updated_at TEXT,
+                edit_summary TEXT
+            )
+        ''')
+        
+        # 2. 串接網頁與機器人的分錢明細表 (具備 project_id 關聯)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS split_records (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER,
                 member_name TEXT,
                 item_name TEXT,
-                total_per_person INTEGER,
+                total_per_person REAL,
                 leader_name TEXT,
                 status INTEGER DEFAULT 0,
                 message_id INTEGER,
-                channel_id INTEGER
+                channel_id INTEGER,
+                FOREIGN KEY(project_id) REFERENCES loot_projects(id)
             )
         """)
+        
+        # 防呆：確保舊表如果缺少 project_id 欄位能自動補上
+        cursor.execute("PRAGMA table_info(split_records);")
+        columns = [col[1] for col in cursor.fetchall()]
+        if "project_id" not in columns:
+            cursor.execute("ALTER TABLE split_records ADD COLUMN project_id INTEGER;")
+
         conn.commit()
         conn.close()
     except Exception as e:
@@ -70,22 +101,32 @@ class EditSplitModal(discord.ui.Modal, title="設定/修改戰利品分錢資訊
         self.view_obj.per_person = per_person
         self.view_obj.update_buttons()
 
-        # 🛠️ 修正：直接以 message_id 與 leader_name 為錨點同步更新資料庫，不管舊名稱是什麼都能正確寫入
+        # 🛠️ 同步更新資料庫：同時更新 loot_projects (總金額) 與 split_records
         try:
             conn = sqlite3.connect("guild_database.db")
             cursor = conn.cursor()
+            
+            cursor.execute(
+                """
+                UPDATE loot_projects 
+                SET item_name = ?, total_price = ?, status = 'active'
+                WHERE id = ?
+                """,
+                (self.item_name.value, price_int, self.view_obj.project_id)
+            )
+            
             cursor.execute(
                 """
                 UPDATE split_records 
                 SET item_name = ?, total_per_person = ? 
-                WHERE leader_name = ? AND status = 0 AND message_id = ?
+                WHERE project_id = ? AND status = 0
                 """,
-                (self.item_name.value, per_person, self.view_obj.leader.display_name, self.view_obj.message_id)
+                (self.item_name.value, per_person, self.view_obj.project_id)
             )
             conn.commit()
             conn.close()
         except Exception as e:
-            print(f"❌ 更新分錢資料庫失敗：{e}")
+            print(f"❌ 更新網頁連動資料庫失敗：{e}")
 
         embed = discord.Embed(
             title="💰 戰利品分錢面板",
@@ -141,19 +182,30 @@ class AddMemberSelectView(discord.ui.View):
         try:
             conn = sqlite3.connect("guild_database.db")
             cursor = conn.cursor()
+            
+            members_str = ", ".join(self.parent_view.members)
             cursor.execute(
-                "DELETE FROM split_records WHERE leader_name = ? AND message_id = ? AND status = 0",
-                (self.parent_view.leader.display_name, self.parent_view.message_id)
+                "UPDATE loot_projects SET members = ? WHERE id = ?",
+                (members_str, self.parent_view.project_id)
+            )
+
+            cursor.execute(
+                "DELETE FROM split_records WHERE project_id = ? AND status = 0",
+                (self.parent_view.project_id,)
             )
             for name in self.parent_view.members:
                 cursor.execute(
-                    "INSERT INTO split_records (member_name, item_name, total_per_person, leader_name, status, message_id, channel_id) VALUES (?, ?, ?, ?, 0, ?, ?)",
-                    (name, self.parent_view.item_name, self.parent_view.per_person, self.parent_view.leader.display_name, self.parent_view.message_id, self.parent_view.channel_id)
+                    """
+                    INSERT INTO split_records 
+                    (project_id, member_name, item_name, total_per_person, leader_name, status, message_id, channel_id) 
+                    VALUES (?, ?, ?, ?, 0, ?, ?)
+                    """,
+                    (self.parent_view.project_id, name, self.parent_view.item_name, self.parent_view.per_person, self.parent_view.leader.display_name, self.parent_view.message_id, self.parent_view.channel_id)
                 )
             conn.commit()
             conn.close()
         except Exception as e:
-            print(f"❌ 成員調動同步資料庫失敗：{e}")
+            print(f"❌ 成員調動同步網頁資料庫失敗：{e}")
 
         embed = discord.Embed(
             title="💰 戰利品分錢面板",
@@ -173,7 +225,7 @@ class AddMemberSelectView(discord.ui.View):
 
 
 class SplitMoneyView(discord.ui.View):
-    def __init__(self, item_name, total, per_person, members, leader, message_id=None, channel_id=None):
+    def __init__(self, item_name, total, per_person, members, leader, message_id=None, channel_id=None, project_id=None):
         super().__init__(timeout=None)
         self.item_name = item_name
         self.total = total
@@ -182,6 +234,7 @@ class SplitMoneyView(discord.ui.View):
         self.leader = leader
         self.message_id = message_id
         self.channel_id = channel_id
+        self.project_id = project_id
         self.status = {m: False for m in members}
         self.update_buttons()
 
@@ -238,19 +291,27 @@ class SplitMoneyView(discord.ui.View):
         try:
             conn = sqlite3.connect("guild_database.db")
             cursor = conn.cursor()
+            
+            members_str = ", ".join(self.members)
+            cursor.execute("UPDATE loot_projects SET members = ? WHERE id = ?", (members_str, self.project_id))
+
             cursor.execute(
-                "DELETE FROM split_records WHERE leader_name = ? AND message_id = ? AND status = 0",
-                (self.leader.display_name, self.message_id)
+                "DELETE FROM split_records WHERE project_id = ? AND status = 0",
+                (self.project_id,)
             )
             for name in self.members:
                 cursor.execute(
-                    "INSERT INTO split_records (member_name, item_name, total_per_person, leader_name, status, message_id, channel_id) VALUES (?, ?, ?, ?, 0, ?, ?)",
-                    (name, self.item_name, self.per_person, self.leader.display_name, self.message_id, self.channel_id)
+                    """
+                    INSERT INTO split_records 
+                    (project_id, member_name, item_name, total_per_person, leader_name, status, message_id, channel_id) 
+                    VALUES (?, ?, ?, ?, 0, ?, ?)
+                    """,
+                    (self.project_id, name, self.item_name, self.per_person, self.leader.display_name, self.message_id, self.channel_id)
                 )
             conn.commit()
             conn.close()
         except Exception as e:
-            print(f"❌ 語音抓取寫入資料庫失敗：{e}")
+            print(f"❌ 語音抓取寫入網頁資料庫失敗：{e}")
 
         self.update_buttons()
 
@@ -326,27 +387,27 @@ class SplitButton(discord.ui.Button):
                 """
                 UPDATE split_records 
                 SET status = ? 
-                WHERE member_name = ? AND leader_name = ? AND message_id = ?
+                WHERE member_name = ? AND project_id = ?
                 """,
-                (new_status, self.member_name, view.leader.display_name, view.message_id)
+                (new_status, self.member_name, view.project_id)
             )
             conn.commit()
             conn.close()
         except Exception as e:
-            print(f"❌ 同步更新領取狀態資料庫失敗：{e}")
+            print(f"❌ 同步更新領取狀態至網頁資料庫失敗：{e}")
 
         all_claimed = all(view.status.values()) if view.status else False
         if all_claimed:
             try:
                 conn = sqlite3.connect("guild_database.db")
                 cursor = conn.cursor()
-                cursor.execute("DELETE FROM split_records WHERE message_id = ?", (view.message_id,))
+                cursor.execute("UPDATE loot_projects SET status = 'completed' WHERE id = ?", (view.project_id,))
                 conn.commit()
                 conn.close()
             except Exception as e:
-                print(f"❌ 刪除已完成面板資料失敗：{e}")
+                print(f"❌ 更新專案完成狀態失敗：{e}")
 
-            await interaction.response.edit_message(content="🎉 **此戰利品所有成員皆已領取完畢，面板已自動關閉並清除！**", embed=None, view=None)
+            await interaction.response.edit_message(content="🎉 **此戰利品所有成員皆已領取完畢，面板已自動關閉！**", embed=None, view=None)
             try:
                 await interaction.message.delete()
             except Exception:
@@ -380,6 +441,39 @@ class SplitSystem(commands.Cog):
         )
         msg = await target_channel.send(embed=temp_embed)
 
+        today_str = datetime.now().strftime('%Y-%m-%d')
+        members_str = ", ".join(members)
+
+        project_id = None
+        try:
+            conn = sqlite3.connect("guild_database.db")
+            cursor = conn.cursor()
+            # 同步在網頁端的 loot_projects 建立一筆主專案
+            cursor.execute(
+                """
+                INSERT INTO loot_projects 
+                (leader_name, item_name, loot_date, members, total_price, tax_rate, status) 
+                VALUES (?, ?, ?, ?, 0, 0, 'pending')
+                """,
+                (interaction.user.display_name, "未命名物品", today_str, members_str)
+            )
+            project_id = cursor.lastrowid
+
+            # 同步建立帶有 project_id 外鍵的分錢明細
+            for name in members:
+                cursor.execute(
+                    """
+                    INSERT INTO split_records 
+                    (project_id, member_name, item_name, total_per_person, leader_name, status, message_id, channel_id) 
+                    VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+                    """,
+                    (project_id, name, "未命名物品", 0, interaction.user.display_name, msg.id, target_channel.id)
+                )
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"❌ 寫入網頁連動資料庫失敗：{e}")
+
         view = SplitMoneyView(
             item_name="未命名物品 (請點擊下方按鈕編輯)", 
             total=0, 
@@ -387,7 +481,8 @@ class SplitSystem(commands.Cog):
             members=members, 
             leader=interaction.user,
             message_id=msg.id,
-            channel_id=target_channel.id
+            channel_id=target_channel.id,
+            project_id=project_id
         )
         
         embed = discord.Embed(
@@ -404,21 +499,7 @@ class SplitSystem(commands.Cog):
         embed.set_footer(text=f"發起人：{interaction.user.display_name}")
 
         await msg.edit(embed=embed, view=view)
-
-        try:
-            conn = sqlite3.connect("guild_database.db")
-            cursor = conn.cursor()
-            for name in members:
-                cursor.execute(
-                    "INSERT INTO split_records (member_name, item_name, total_per_person, leader_name, status, message_id, channel_id) VALUES (?, ?, ?, ?, 0, ?, ?)",
-                    (name, "未命名物品", 0, interaction.user.display_name, msg.id, target_channel.id)
-                )
-            conn.commit()
-            conn.close()
-        except Exception as e:
-            print(f"❌ 寫入資料庫失敗：{e}")
-
-        await interaction.response.send_message(f"✅ 即時分錢面板已發送至 {target_channel.mention}！", ephemeral=True)
+        await interaction.response.send_message(f"✅ 即時分錢面板已發送至 {target_channel.mention}，並已成功同步至網頁端系統！", ephemeral=True)
 
     @cmd_instant_split.autocomplete("initial_member")
     async def instant_split_autocomplete(self, interaction: discord.Interaction, current: str):
