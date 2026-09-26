@@ -280,8 +280,9 @@ class InterviewAuditView(discord.ui.View):
         custom_id="audit_branch_select"
     )
     async def branch_select_callback(self, interaction: discord.Interaction, select: discord.ui.Select):
+        await interaction.response.defer(ephemeral=True)
         self.selected_branch = select.values[0]
-        await interaction.response.send_message(f"📌 已將目標分會暫定為：**{self.selected_branch}**，請點擊下方按鈕確認通過。", ephemeral=True)
+        await interaction.followup.send(f"📌 已將目標分會暫定為：**{self.selected_branch}**，請點擊下方按鈕確認通過。", ephemeral=True)
 
     @discord.ui.button(
         label="✅ 通過審核並發放身分組",
@@ -289,6 +290,7 @@ class InterviewAuditView(discord.ui.View):
         custom_id="audit_approve_btn",
     )
     async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
         guild = interaction.guild
         
         app_id = self.applicant_id
@@ -405,7 +407,7 @@ class InterviewAuditView(discord.ui.View):
                 content=post_content,
             )
 
-        await interaction.response.edit_message(
+        await interaction.edit_original_response(
             content=(
                 f"✅ 已由 {interaction.user.mention} 審核**通過**！\n•"
                 f" 玩家填寫職業：`{self.main_class}`\n•"
@@ -422,7 +424,8 @@ class InterviewAuditView(discord.ui.View):
         custom_id="audit_reject_btn",
     )
     async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.edit_message(
+        await interaction.response.defer()
+        await interaction.edit_original_response(
             content=f"❌ 已由 {interaction.user.mention} 審核**拒絕**該申請。",
             view=None,
         )
@@ -439,16 +442,17 @@ class RulesAcceptanceView(discord.ui.View):
         custom_id="rules_accept_button",
     )
     async def accept_rules(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
         role = discord.utils.get(interaction.guild.roles, name=MEMBER_ROLE_NAME)
         if role and role in interaction.user.roles:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "❌ 你已經擁有公會身分組，不需要重複填寫申請！",
                 ephemeral=True
             )
             return
 
         view = ClassSelectView()
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "請先點擊下方選單選擇您的職業：",
             view=view,
             ephemeral=True,
