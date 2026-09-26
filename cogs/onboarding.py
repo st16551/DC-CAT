@@ -1,3 +1,10 @@
+import sqlite3
+import discord
+from discord import app_commands
+from discord.ext import commands  # <--- 已補上這行
+import gspread
+from google.oauth2.service_account import Credentials
+
 # --- 4. 幹部管理與指令 Cog ---
 class GuildAdminCog(commands.Cog):
     def __init__(self, bot):
