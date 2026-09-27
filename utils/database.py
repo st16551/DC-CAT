@@ -246,6 +246,18 @@ def init_db():
         """
     )
 
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS personal_history_hidden (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            discord_user_id TEXT NOT NULL,
+            record_id INTEGER NOT NULL,
+            deleted_at TEXT,
+            UNIQUE(discord_user_id, record_id)
+        )
+        """
+    )
+
     try:
         cursor.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_game_characters_discord_id ON game_characters(discord_id)"

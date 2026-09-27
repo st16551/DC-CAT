@@ -3,7 +3,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from utils.database import get_db_connection, init_db as init_core_db
-from utils.sheets import get_member_sheet
+from utils.sheets import get_member_sheet, sync_all_members_to_sheet, sync_member_by_discord_id
 
 MEMBER_ROLE_NAME = "成員"
 FORUM_CHANNEL_ID = 1549273328705872002
@@ -287,16 +287,18 @@ class InterviewAuditView(discord.ui.View):
         conn.close()
 
         try:
-            sheet = get_member_sheet()
             current_time = discord.utils.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-            sheet.append_row([
-                str(app_id),
-                self.discord_name,
-                self.character_name,
-                self.main_class,
-                target_branch,
-                current_time
-            ])
+            sync_member_by_discord_id(
+                app_id,
+                member=applicant,
+                extra_profile={
+                    "discord_name": self.discord_name,
+                    "character_name": self.character_name,
+                    "main_class": self.main_class,
+                    "branch": target_branch,
+                    "joined_at": current_time,
+                },
+            )
         except Exception as e:
             print(f"❌ 寫入 Google 試算表失敗：{e}")
 
@@ -463,10 +465,24 @@ class GuildAdminCog(commands.Cog):
             
             for index, row in enumerate(rows[1:], start=2):
                 discord_id_cell = row[0].strip() if len(row) > 0 else ""
-                discord_name_cell = row[1].strip() if len(row) > 1 else ""
-                char_name_val = row[2].strip() if len(row) > 2 else ""
-                class_val = row[3].strip() if len(row) > 3 else ""
-                branch_val = row[4].strip() if len(row) > 4 else "未分配"
+                col_b = row[1].strip() if len(row) > 1 else ""
+                col_c = row[2].strip() if len(row) > 2 else ""
+                col_d = row[3].strip() if len(row) > 3 else ""
+                col_e = row[4].strip() if len(row) > 4 else ""
+
+                # 新版：B=職業-角色(帳號)，C=角色，D=職業，E=分會
+                # 舊版：B=Discord 帳號，C=角色，D=職業，E=分會
+                looks_like_label = ("-" in col_b and "(" in col_b)
+                if looks_like_label:
+                    discord_name_cell = col_b[col_b.rfind("(") + 1 : -1] if col_b.endswith(")") else col_b
+                    char_name_val = col_c
+                    class_val = col_d
+                    branch_val = col_e if col_e else "未分配"
+                else:
+                    discord_name_cell = col_b
+                    char_name_val = col_c
+                    class_val = col_d
+                    branch_val = col_e if col_e else "未分配"
                 game_name_val = "靈谷"
                 
                 target_discord_id = None
@@ -503,10 +519,17 @@ class GuildAdminCog(commands.Cog):
 
             conn.commit()
             conn.close()
+
+            status_count = 0
+            try:
+                status_count = sync_all_members_to_sheet(guild)
+            except Exception as sheet_e:
+                print(f"回寫請假/活躍欄位失敗: {sheet_e}")
             
             msg = f"✅ **同步完成！**\n"
             msg += f"• 自動補齊試算表 A 欄 ID：`{updated_id_count}` 筆\n"
             msg += f"• 同步更新至本地資料庫：`{db_sync_count}` 筆資料\n"
+            msg += f"• 回寫人員／請假／活躍／未活躍欄：`{status_count}` 筆\n"
             
             if not_found_list:
                 msg += f"\n⚠️ 以下帳號在伺服器中找不到對應成員：\n`{', '.join(not_found_list)}`"

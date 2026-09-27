@@ -2,7 +2,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from utils.database import get_db_connection
-from utils.sheets import get_member_sheet, normalize_class_name
+from utils.sheets import sync_member_by_discord_id, normalize_class_name
 
 ROLE_IDS = {
     "牧師": 1529725865024557196,
@@ -81,15 +81,16 @@ class EditMemberByDiscordModal(discord.ui.Modal, title="🛠️ 修改成員資�
         # 2. 同步更新 Google 試算表[cite: 1]
         sheet_updated = False
         try:
-            sheet = get_member_sheet()
-            
-            cell = sheet.find(str(self.target_discord_id))
-            if cell:
-                row_idx = cell.row
-                sheet.update_cell(row_idx, 4, new_char_name)
-                sheet.update_cell(row_idx, 5, new_class)
-                sheet.update_cell(row_idx, 6, new_branch)
-                sheet_updated = True
+            sync_member_by_discord_id(
+                self.target_discord_id,
+                member=interaction.guild.get_member(self.target_discord_id) if interaction.guild else None,
+                extra_profile={
+                    "character_name": new_char_name,
+                    "main_class": new_class,
+                    "branch": new_branch,
+                },
+            )
+            sheet_updated = True
         except Exception as e:
             print(f"❌ 同步 Google 試算表失敗：{e}")
 

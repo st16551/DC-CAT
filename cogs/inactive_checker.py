@@ -7,6 +7,7 @@ from discord.ext import commands
 
 # 引入共用的資料庫連線或資料變數
 from utils.database import get_db_connection
+from utils.sheets import parse_leave_range, sync_all_members_to_sheet
 
 
 class InactiveCheckerCog(commands.Cog):
@@ -62,21 +63,9 @@ class InactiveCheckerCog(commands.Cog):
                 if isinstance(row_leave, sqlite3.Row)
                 else row_leave[2]
             )
-            try:
-                s_m, s_d = map(
-                    int, start_str.replace("月", "/").replace("日", "").split("/")
-                )
-                e_m, e_d = map(
-                    int, end_str.replace("月", "/").replace("日", "").split("/")
-                )
-
-                start_dt = datetime(now.year, s_m, s_d)
-                end_dt = datetime(now.year, e_m, e_d, 23, 59, 59)
-
-                if start_dt <= now <= end_dt:
-                    on_leave_discord_ids.add(discord_id)
-            except Exception:
-                pass
+            start_dt, end_dt = parse_leave_range(start_str, end_str, now)
+            if start_dt and end_dt and start_dt <= now <= end_dt:
+                on_leave_discord_ids.add(discord_id)
 
         inactive_list = []
         excused_count = 0
@@ -175,6 +164,33 @@ class InactiveCheckerCog(commands.Cog):
             file=file,
             ephemeral=True,
         )
+        try:
+            synced = sync_all_members_to_sheet(guild, days=days)
+            await interaction.followup.send(
+                f"📑 已同步試算表：請假／活躍／未活躍共 `{synced}` 筆（請假中不會寫入未活躍欄）。",
+                ephemeral=True,
+            )
+        except Exception as e:
+            await interaction.followup.send(
+                f"⚠️ 名單已產出，但試算表同步失敗：`{e}`",
+                ephemeral=True,
+            )
+
+    @app_commands.command(
+        name="同步試算表狀態",
+        description="【管理員】把人員完整資料、請假、活躍、未活躍寫回 Google 試算表對應欄",
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def sync_sheet_status(self, interaction: discord.Interaction, days: int = 14):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            count = sync_all_members_to_sheet(interaction.guild, days=days)
+            await interaction.followup.send(
+                f"✅ 已把 `{count}` 位成員的人員資料、請假、活躍、未活躍寫入試算表。\n請假中的成員不會出現在未活躍欄。",
+                ephemeral=True,
+            )
+        except Exception as e:
+            await interaction.followup.send(f"❌ 同步失敗：`{e}`", ephemeral=True)
 
 
 async def setup(bot):

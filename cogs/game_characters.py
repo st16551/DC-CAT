@@ -8,6 +8,7 @@ from discord.ext import commands
 
 # 引入共用的絕對路徑資料庫連線
 from utils.database import DB_FILE, get_db_connection
+from utils.sheets import sync_member_by_discord_id
 
 
 def update_user_activity(discord_id: int):
@@ -222,8 +223,13 @@ class LeaveReviewView(discord.ui.View):
             item.disabled = True
 
         await interaction.response.edit_message(embed=embed, view=self)
+        try:
+            member = interaction.guild.get_member(target_discord_id) if interaction.guild else None
+            sync_member_by_discord_id(target_discord_id, member=member)
+        except Exception as e:
+            print(f"請假核准後同步試算表失敗: {e}")
         await interaction.followup.send(
-            f"✅ 已經批准了該位成員的請假申請。", ephemeral=True
+            f"✅ 已經批准了該位成員的請假申請，並已同步至試算表請假欄。", ephemeral=True
         )
 
     @discord.ui.button(
@@ -265,6 +271,10 @@ class LeaveReviewView(discord.ui.View):
 
         guild = interaction.guild
         target_member = guild.get_member(target_discord_id)
+        try:
+            sync_member_by_discord_id(target_discord_id, member=target_member)
+        except Exception as e:
+            print(f"請假駁回後同步試算表失敗: {e}")
 
         notify_text = f"❌ **{interaction.user.mention} 已經駁回了您的請假申請。**"
         if target_member:
