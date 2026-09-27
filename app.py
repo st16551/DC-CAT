@@ -321,7 +321,7 @@ HTML_TEMPLATE = """
 
         {% if tab == 'dashboard' %}
         <div class="stats-grid">
-            <div class="stat-card"><span class="stat-label">{% if scope == 'mine' %}我的進行中筆數{% else %}總分發紀錄筆數{% endif %}</span><span class="stat-value">{{ records|length }} 筆</span></div>
+            <div class="stat-card"><span class="stat-label">{% if scope == 'mine' %}我的未領筆數{% else %}未領取紀錄筆數{% endif %}</span><span class="stat-value">{{ records|length }} 筆</span></div>
             <div class="stat-card"><span class="stat-label">待售寶物數量</span><span class="stat-value" style="color: var(--accent-blue);">{{ pending_count }} 件</span></div>
             <div class="stat-card"><span class="stat-label">試算表成員連線</span><span class="stat-value" style="color: var(--accent-green);">已同步 (Live)</span></div>
         </div>
@@ -331,7 +331,9 @@ HTML_TEMPLATE = """
                 <span>{% if scope == 'mine' %}👤 我的分錢明細（進行中）{% else %}💰 現有分錢總覽明細{% endif %}</span>
             </h3>
             {% if scope == 'mine' %}
-            <p class="muted-note">此處只顯示尚未全部結清的個人紀錄。已領取且該筆相關交易結束後，會自動進到左側「個人歷史紀錄」。</p>
+            <p class="muted-note">此處只顯示尚未領取的分錢。點「確認已領」後，該筆會移到左側「個人歷史紀錄」。</p>
+            {% else %}
+            <p class="muted-note">總覽只顯示未領取的單子。已領取的紀錄會進入各人的「個人歷史紀錄」。</p>
             {% endif %}
             <table>
                 <tr>
@@ -362,11 +364,7 @@ HTML_TEMPLATE = """
                             {% if is_admin or row.can_toggle %}
                                 <form action="/toggle/{{ row[0] }}" method="POST" style="margin:0; display:inline;">
                                     <input type="hidden" name="scope" value="{{ scope }}">
-                                    {% if row[5] == 1 %}
-                                        <button type="submit" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;">改為未領</button>
-                                    {% else %}
-                                        <button type="submit" class="btn" style="padding: 6px 12px; font-size: 12px;">確認已領</button>
-                                    {% endif %}
+                                    <button type="submit" class="btn" style="padding: 6px 12px; font-size: 12px;">確認已領</button>
                                 </form>
                             {% else %}
                                 <span style="color:var(--text-muted); font-size:12px;">僅限本人/幹部</span>
@@ -377,7 +375,7 @@ HTML_TEMPLATE = """
                     </td>
                 </tr>
                 {% else %}
-                <tr><td colspan="7" style="text-align:center; color:var(--text-muted); padding: 40px;">{% if scope == 'mine' %}目前沒有進行中的個人分錢紀錄。{% else %}目前沒有任何分錢明細記錄。{% endif %}</td></tr>
+                <tr><td colspan="7" style="text-align:center; color:var(--text-muted); padding: 40px;">{% if scope == 'mine' %}目前沒有未領取的個人分錢紀錄。{% else %}目前沒有未領取的分錢明細。{% endif %}</td></tr>
                 {% endfor %}
             </table>
         </div>
@@ -389,7 +387,7 @@ HTML_TEMPLATE = """
             <p class="muted-note">請先 Discord 登入後，才能查看與刪除屬於你的歷史分錢紀錄。</p>
             <a href="/login" class="btn btn-discord" style="width:auto;">🔐 Discord 登入</a>
             {% else %}
-            <p class="muted-note">當你相關的分錢都已領取（或該筆專案已結算完畢）時，系統會自動把紀錄移到這裡。刪除只會從你的個人存檔移除，不會改動公會總帳。</p>
+            <p class="muted-note">已領取的單子會出現在這裡。按「取消」會退回總覽，變成未領、可再次點領取。刪除只從你的個人存檔隱藏，不會改公會總帳。</p>
             <table>
                 <tr>
                     <th>編號</th>
@@ -409,13 +407,16 @@ HTML_TEMPLATE = """
                     <td>{{ row[4] }}</td>
                     <td>
                         {% if row[5] == 1 %}
-                            <span class="status-badge status-paid">已領取 / 已結算</span>
+                            <span class="status-badge status-paid">已領取</span>
                         {% else %}
-                            <span class="status-badge status-paid">專案已結算</span>
+                            <span class="status-badge status-unpaid">未領取</span>
                         {% endif %}
                     </td>
-                    <td>
-                        <form action="/history/delete/{{ row[0] }}" method="POST" style="margin:0;" onsubmit="return confirm('確定從個人歷史紀錄刪除這筆？公會總帳不會被刪除。');">
+                    <td style="white-space:nowrap;">
+                        <form action="/history/unclaim/{{ row[0] }}" method="POST" style="margin:0; display:inline;">
+                            <button type="submit" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;">取消</button>
+                        </form>
+                        <form action="/history/delete/{{ row[0] }}" method="POST" style="margin:0; display:inline;" onsubmit="return confirm('確定從個人歷史紀錄刪除這筆？公會總帳不會被刪除。');">
                             <button type="submit" class="btn btn-danger" style="padding: 6px 12px; font-size: 12px;">刪除</button>
                         </form>
                     </td>
@@ -662,30 +663,19 @@ def index():
     tokens = _user_match_tokens(user, cursor)
     hidden_ids = _hidden_record_ids(cursor, user.get('id') if user else None)
 
-    mine_by_project = {}
-    for row in raw_records:
-        if user and member_matches_user(row[1], tokens):
-            mine_by_project.setdefault(row[6], []).append(row)
-
-    finished_projects = set()
-    for project_id, rows in mine_by_project.items():
-        all_claimed = all((r[5] or 0) == 1 for r in rows)
-        project_completed = any((r[7] or '') == 'completed' for r in rows)
-        if all_claimed or (project_completed and all_claimed):
-            finished_projects.add(project_id)
-
     dashboard_all = []
     dashboard_mine_active = []
     history_records = []
     for row in raw_records:
         is_mine = bool(user) and member_matches_user(row[1], tokens)
+        claimed = (row[5] or 0) == 1
         view = SplitRowView(row, can_toggle=is_mine or bool(is_admin))
-        in_history = is_mine and row[6] in finished_projects
-        dashboard_all.append(view)
-        if in_history:
-            if row[0] not in hidden_ids:
+        if claimed:
+            if is_mine and row[0] not in hidden_ids:
                 history_records.append(view)
-        elif is_mine:
+            continue
+        dashboard_all.append(view)
+        if is_mine:
             dashboard_mine_active.append(view)
 
     records = dashboard_mine_active if (scope == 'mine' and user) else dashboard_all
@@ -1077,8 +1067,41 @@ def toggle_status(record_id):
     conn.commit()
     conn.close()
 
+    if new_status == 1:
+        return redirect(url_for('index', tab='history'))
     scope = request.form.get('scope', 'all')
     return redirect(url_for('index', tab='dashboard', scope=scope))
+
+
+@app.route('/history/unclaim/<int:record_id>', methods=['POST'])
+def unclaim_personal_history(record_id):
+    """從個人歷史取消已領，單子回到總覽可再次點領取。"""
+    user = session.get('user')
+    if not user:
+        return redirect(url_for('login'))
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT member_name, status FROM split_records WHERE id = ?", (record_id,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return "找不到該筆紀錄", 404
+
+    tokens = _user_match_tokens(user, cursor)
+    is_admin = user.get('id') in ADMIN_DISCORD_IDS
+    if not member_matches_user(row[0], tokens) and not is_admin:
+        conn.close()
+        return "權限不足：只能取消自己的歷史紀錄。", 403
+
+    cursor.execute("UPDATE split_records SET status = 0 WHERE id = ?", (record_id,))
+    cursor.execute(
+        "DELETE FROM personal_history_hidden WHERE discord_user_id = ? AND record_id = ?",
+        (str(user.get('id')), record_id),
+    )
+    conn.commit()
+    conn.close()
+    return redirect(url_for('index', tab='dashboard', scope='mine'))
 
 
 @app.route('/history/delete/<int:record_id>', methods=['POST'])
