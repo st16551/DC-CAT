@@ -57,7 +57,6 @@ class LevelingCog(commands.Cog):
             
             xp_gain = random.randint(10, 20)
             xp += xp_gain
-            leveled_up = False
             new_level = level
 
             # 檢查是否達到升級門檻
@@ -65,7 +64,6 @@ class LevelingCog(commands.Cog):
                 new_level += 1
                 xp -= max_exp
                 max_exp = int(max_exp * 1.2)  # 每升一級提高升級門檻
-                leveled_up = True
 
             cursor.execute("""
                 UPDATE member_levels 
@@ -73,14 +71,6 @@ class LevelingCog(commands.Cog):
                 WHERE discord_id = ?
             """, (new_level, xp, max_exp, user_id))
             conn.commit()
-
-            if leveled_up:
-                try:
-                    await message.channel.send(
-                        f"🎉 恭喜 {message.author.mention} 升到了 **Lv.{new_level}**！"
-                    )
-                except discord.HTTPException:
-                    pass
 
         conn.close()
 
