@@ -310,6 +310,46 @@ def _activity_fields(discord_id, cursor, now, days, on_leave, joined_at=None):
     return active_text, inactive_text
 
 
+def _cell_text(value):
+    return (str(value) if value is not None else "").strip()
+
+
+def resolve_branch(*sources):
+    """分會優先用資料庫；都空時才退回試算表 E 欄已有內容。"""
+    for source in sources:
+        text = _cell_text(source)
+        if text:
+            return text
+    return ""
+
+
+def existing_branch_map(rows):
+    """A 欄 Discord ID → E 欄（分配分會）手動／既有內容。"""
+    mapping = {}
+    for row in rows[1:] if rows else []:
+        if not row:
+            continue
+        discord_id = _cell_text(row[0] if len(row) > 0 else "")
+        if not discord_id:
+            continue
+        branch = _cell_text(row[4] if len(row) > 4 else "")
+        if not branch:
+            continue
+        mapping[discord_id] = branch
+        if discord_id.isdigit():
+            mapping[str(int(discord_id))] = branch
+    return mapping
+
+
+def lookup_sheet_branch(branch_map, discord_id):
+    key = _cell_text(discord_id)
+    if key in branch_map:
+        return branch_map[key]
+    if key.isdigit():
+        return branch_map.get(str(int(key)), "")
+    return ""
+
+
 def _joined_text(cursor, discord_id, fallback=None):
     if fallback:
         return str(fallback)
@@ -338,7 +378,7 @@ def build_member_sheet_row(profile: dict, cursor=None, now=None, days=None):
     job = profile.get("main_class") or ""
     character_name = profile.get("character_name") or ""
     discord_name = profile.get("discord_name") or ""
-    branch = profile.get("branch") or ""
+    branch = resolve_branch(profile.get("branch"))
     joined = _joined_text(cursor, discord_id, profile.get("joined_at"))
     leave_text, on_leave = _current_leave_text(discord_id, cursor, now)
     active_text, inactive_text = _activity_fields(
@@ -397,6 +437,10 @@ def upsert_member_sheet_values(values):
     values = _pad_row(values)
     discord_id = str(values[0]).strip()
     rows = sheet.get_all_values()
+    values[4] = resolve_branch(
+        values[4],
+        lookup_sheet_branch(existing_branch_map(rows), discord_id),
+    )
     if not rows or rows[0][: len(SHEET_HEADERS)] != SHEET_HEADERS:
         data_rows = [_pad_row(r) for r in rows[1:]] if rows else []
         replaced = False
@@ -440,10 +484,13 @@ def sync_member_by_discord_id(discord_id, member=None, extra_profile=None, days=
     row = cursor.fetchone()
     profile = extra_profile.copy() if extra_profile else {}
     profile["discord_id"] = int(discord_id)
+    db_branch = ""
+    extra_branch = profile.get("branch")
     if row:
         profile.setdefault("discord_name", row["discord_name"] or "")
         profile.setdefault("character_name", row["character_name"] or "")
-        profile.setdefault("branch", row["branch"] or "")
+        db_branch = row["branch"] or ""
+    profile["branch"] = resolve_branch(db_branch, extra_branch)
     if member is not None:
         profile["discord_name"] = display_name or str(member)
         if getattr(member, "joined_at", None):
@@ -478,6 +525,9 @@ def sync_all_members_to_sheet(guild, days=None):
         for r in cursor.fetchall()
     }
 
+    existing = sheet.get_all_values()
+    sheet_branches = existing_branch_map(existing)
+
     payloads = {}
     if guild is not None:
         for member in guild.members:
@@ -491,7 +541,10 @@ def sync_all_members_to_sheet(guild, days=None):
                 "discord_id": member.id,
                 "discord_name": display_name,
                 "character_name": rec.get("character_name") or "",
-                "branch": rec.get("branch") or "",
+                "branch": resolve_branch(
+                    rec.get("branch"),
+                    lookup_sheet_branch(sheet_branches, member.id),
+                ),
                 "joined_at": member.joined_at.strftime("%Y-%m-%d %H:%M:%S")
                 if member.joined_at
                 else "",
@@ -499,8 +552,6 @@ def sync_all_members_to_sheet(guild, days=None):
             }
             apply_display_name_profile(profile, display_name)
             payloads[member.id] = profile
-
-    existing = sheet.get_all_values()
     ordered_ids = []
     seen = set()
     for row in existing[1:]:
