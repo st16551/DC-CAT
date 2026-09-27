@@ -5,6 +5,7 @@
 
 import json
 import os
+import re
 from datetime import datetime, timedelta
 
 import gspread
@@ -16,6 +17,9 @@ SPREADSHEET_ID = os.getenv(
     "SPREADSHEET_ID", "12AP1pzhqeskwhYY5piaYGasRNifLdCpgoddjxVM5yg4"
 )
 MEMBER_SHEET_NAME = os.getenv("MEMBER_SHEET_NAME", "成員名單")
+LEAVE_SHEET_NAME = os.getenv("LEAVE_SHEET_NAME", "請假")
+ACTIVE_SHEET_NAME = os.getenv("ACTIVE_SHEET_NAME", "活躍")
+INACTIVE_SHEET_NAME = os.getenv("INACTIVE_SHEET_NAME", "未活躍")
 INACTIVE_DAYS = int(os.getenv("INACTIVE_DAYS", "14"))
 
 SCOPES = [
@@ -49,18 +53,45 @@ _CLASS_PREFIXES_SORTED = tuple(
 )
 _CLASS_SEPARATORS = "-－—_"
 
-# A~I 固定欄位：人員完整資料 + 請假 / 活躍 / 未活躍
+# 成員名單：圖二 A~E（不含 DC ID）
 SHEET_HEADERS = [
     "Discord ID",
     "人員資料",
-    "遊戲角色 ID",
     "職業",
     "分配分會",
     "入會時間",
-    "請假",
-    "活躍",
-    "未活躍",
 ]
+MEMBER_COL_LETTER = "E"
+MEMBER_WIDTH = 5
+
+LEAVE_HEADERS = ["Discord ID", "人員資料", "職業", "分配分會", "請假"]
+ACTIVE_HEADERS = ["Discord ID", "人員資料", "職業", "分配分會", "活躍"]
+INACTIVE_HEADERS = ["Discord ID", "人員資料", "職業", "分配分會", "未活躍"]
+
+# Discord 分會身分組 ID → 試算表分會
+BRANCH_ROLE_IDS = {
+    1541087729088200765: "1會",
+    1541087803151098079: "2會",
+    1541087848298446998: "3會",
+}
+_BRANCH_TOKEN_MAP = {
+    "iii": "3會",
+    "3會": "3會",
+    "3会": "3會",
+    "3": "3會",
+    "ii": "2會",
+    "2會": "2會",
+    "2会": "2會",
+    "2": "2會",
+    "i": "1會",
+    "1會": "1會",
+    "1会": "1會",
+    "1": "1會",
+}
+_BRANCH_NAME_RE = re.compile(
+    r"escalation\s*(iii|ii|i|[123][會会]?)",
+    re.IGNORECASE,
+)
 
 
 def normalize_class_name(name: str) -> str:
@@ -116,6 +147,44 @@ def apply_display_name_profile(profile: dict, display_name: str) -> bool:
     return True
 
 
+def branch_from_role_name(role_name: str):
+    name = (role_name or "").strip()
+    if not name:
+        return ""
+    compact = re.sub(r"\s+", "", name)
+    if compact in ("1會", "1会"):
+        return "1會"
+    if compact in ("2會", "2会"):
+        return "2會"
+    if compact in ("3會", "3会"):
+        return "3會"
+    match = _BRANCH_NAME_RE.search(name)
+    if not match:
+        return ""
+    token = match.group(1).lower().replace("会", "會")
+    return _BRANCH_TOKEN_MAP.get(token, "")
+
+
+def branch_from_member_roles(member):
+    """用成員身上的分會身分組對應 1會／2會／3會（Escalation 1會、Escalation II …）。"""
+    if member is None:
+        return ""
+    roles = list(getattr(member, "roles", None) or [])
+    found = []
+    for role in roles:
+        mapped = BRANCH_ROLE_IDS.get(getattr(role, "id", None))
+        if mapped:
+            found.append(mapped)
+            continue
+        mapped = branch_from_role_name(getattr(role, "name", "") or "")
+        if mapped:
+            found.append(mapped)
+    for prefer in ("1會", "2會", "3會"):
+        if prefer in found:
+            return prefer
+    return ""
+
+
 def get_google_credentials_info():
     """只從環境變數 GOOGLE_CREDENTIALS 讀 JSON，絕不讀 credentials.json。"""
     raw = os.getenv("GOOGLE_CREDENTIALS")
@@ -148,36 +217,80 @@ def get_gspread_client():
     return gspread.authorize(creds)
 
 
-def get_member_sheet():
-    client = get_gspread_client()
-    spreadsheet = client.open_by_key(SPREADSHEET_ID)
+def get_spreadsheet():
+    return get_gspread_client().open_by_key(SPREADSHEET_ID)
+
+
+def get_or_create_worksheet(spreadsheet, title, rows=2000, cols=8):
+    try:
+        return spreadsheet.worksheet(title)
+    except Exception:
+        return spreadsheet.add_worksheet(title=title, rows=rows, cols=cols)
+
+
+def get_member_sheet(spreadsheet=None):
+    spreadsheet = spreadsheet or get_spreadsheet()
     try:
         return spreadsheet.worksheet(MEMBER_SHEET_NAME)
     except Exception:
         return spreadsheet.sheet1
 
 
+def detect_member_layout(headers):
+    """相容圖一（含 DC ID）與圖二（職業在 C 欄）。"""
+    headers = [_cell_text(h) for h in (headers or [])]
+    if "DC ID" in headers or "遊戲角色 ID" in headers:
+        return {"id": 0, "label": 1, "character": 2, "job": 3, "branch": 4, "joined": 5}
+    if len(headers) >= 4 and headers[3] == "職業":
+        return {"id": 0, "label": 1, "character": 2, "job": 3, "branch": 4, "joined": 5}
+    return {"id": 0, "label": 1, "character": None, "job": 2, "branch": 3, "joined": 4}
+
+
+def parse_member_row(row, headers=None):
+    layout = detect_member_layout(headers)
+    cells = [(c or "").strip() if c is not None else "" for c in (row or [])]
+
+    def at(key):
+        index = layout.get(key)
+        if index is None or index >= len(cells):
+            return ""
+        return cells[index]
+
+    label = at("label")
+    job = at("job")
+    character = at("character")
+    if not character and label:
+        prefix = match_guild_class_prefix(label)
+        if prefix:
+            character = _character_from_display_name(label, prefix)
+    discord_name = label
+    if "(" in label and label.endswith(")"):
+        discord_name = label[label.rfind("(") + 1 : -1]
+    elif "（" in label and label.endswith("）"):
+        discord_name = label[label.rfind("（") + 1 : -1]
+    return {
+        "discord_id": at("id"),
+        "discord_name": discord_name,
+        "sheet_label": label,
+        "character_name": character,
+        "main_class": job,
+        "branch": at("branch"),
+        "joined_at": at("joined"),
+    }
+
+
 def format_member_display(row):
     """相容機器人寫入版 / 舊公開 CSV 版。"""
     if not row:
         return ""
+    parsed = parse_member_row(row)
+    if parsed.get("sheet_label"):
+        return parsed["sheet_label"]
     cells = [(c or "").strip() for c in row]
-    if len(cells) > 1 and cells[1] and ("-" in cells[1] or "(" in cells[1]):
-        return cells[1]
     first = cells[0] if cells else ""
     if first.isdigit() and len(cells) >= 4:
-        discord_name = cells[1] if len(cells) > 1 else ""
-        character_name = cells[2] if len(cells) > 2 else ""
-        job = cells[3] if len(cells) > 3 else ""
-        if job and character_name:
-            return f"{job}-{character_name}({discord_name})"
-        return character_name or discord_name
-    discord_account = cells[1] if len(cells) > 1 else ""
-    game_name = cells[2] if len(cells) > 2 else ""
-    job = cells[3] if len(cells) > 3 else ""
-    if job and game_name:
-        return f"{job}-{game_name}({discord_account})"
-    return game_name or discord_account
+        return cells[1] or cells[2] or ""
+    return cells[1] if len(cells) > 1 else ""
 
 
 def build_personnel_label(job, character_name, discord_name, discord_id=None):
@@ -316,7 +429,7 @@ def _cell_text(value):
 
 
 def resolve_branch(*sources):
-    """分會優先用資料庫；都空時才退回試算表 E 欄已有內容。"""
+    """分會優先用 Discord 身分組／資料庫；都空時才退回試算表已有內容。"""
     for source in sources:
         text = _cell_text(source)
         if text:
@@ -325,15 +438,18 @@ def resolve_branch(*sources):
 
 
 def existing_branch_map(rows):
-    """A 欄 Discord ID → E 欄（分配分會）手動／既有內容。"""
+    """A 欄 Discord ID → 分配分會（相容舊欄位位置）。"""
     mapping = {}
+    headers = rows[0] if rows else []
+    layout = detect_member_layout(headers)
+    branch_idx = layout["branch"]
     for row in rows[1:] if rows else []:
         if not row:
             continue
         discord_id = _cell_text(row[0] if len(row) > 0 else "")
         if not discord_id:
             continue
-        branch = _cell_text(row[4] if len(row) > 4 else "")
+        branch = _cell_text(row[branch_idx] if len(row) > branch_idx else "")
         if not branch:
             continue
         mapping[discord_id] = branch
@@ -366,8 +482,8 @@ def _joined_text(cursor, discord_id, fallback=None):
     return ""
 
 
-def build_member_sheet_row(profile: dict, cursor=None, now=None, days=None):
-    """組成 A~I 一列完整人員資料。"""
+def collect_member_sync_payload(profile: dict, cursor=None, now=None, days=None):
+    """組成成員名單列 + 請假／活躍／未活躍文字。"""
     close_conn = False
     if cursor is None:
         conn = get_db_connection()
@@ -393,23 +509,30 @@ def build_member_sheet_row(profile: dict, cursor=None, now=None, days=None):
     personnel = (profile.get("sheet_label") or "").strip() or build_personnel_label(
         job, character_name, discord_name, discord_id
     )
-    values = [
+    member_row = [
         str(discord_id),
         personnel,
-        character_name,
         job,
         branch,
         joined,
-        leave_text,
-        active_text,
-        inactive_text,
     ]
     if close_conn:
         cursor.connection.close()
-    return values
+    return {
+        "member": member_row,
+        "leave": leave_text,
+        "active": active_text,
+        "inactive": inactive_text,
+    }
 
 
-def _pad_row(values, width=9):
+def build_member_sheet_row(profile: dict, cursor=None, now=None, days=None):
+    return collect_member_sync_payload(profile, cursor=cursor, now=now, days=days)[
+        "member"
+    ]
+
+
+def _pad_row(values, width=MEMBER_WIDTH):
     row = list(values)[:width]
     while len(row) < width:
         row.append("")
@@ -417,19 +540,45 @@ def _pad_row(values, width=9):
 
 
 def _write_member_table_batch(sheet, data_rows):
-    """一次寫入整張成員表 A1:I（含表頭），避免逐列 append 觸發 429。"""
-    matrix = [SHEET_HEADERS] + [_pad_row(row) for row in data_rows]
+    """一次寫入成員名單 A1:E，並清掉舊的 F~I（請假／活躍欄）。"""
+    width = len(SHEET_HEADERS)
+    matrix = [SHEET_HEADERS] + [_pad_row(row, width) for row in data_rows]
     end_row = len(matrix)
-    sheet.update(f"A1:I{end_row}", matrix, value_input_option="USER_ENTERED")
+    sheet.update(f"A1:E{end_row}", matrix, value_input_option="USER_ENTERED")
+    leftover = max(sheet.row_count, end_row)
+    clears = [f"F1:I{max(leftover, 1)}"]
+    if leftover > end_row:
+        clears.append(f"A{end_row + 1}:E{leftover}")
+    sheet.batch_clear(clears)
+
+
+def _write_status_table(sheet, headers, data_rows):
+    width = len(headers)
+    matrix = [headers] + [_pad_row(row, width) for row in data_rows]
+    end_row = len(matrix)
+    sheet.update(f"A1:E{end_row}", matrix, value_input_option="USER_ENTERED")
     leftover = max(sheet.row_count, end_row)
     if leftover > end_row:
-        sheet.batch_clear([f"A{end_row + 1}:I{leftover}"])
+        sheet.batch_clear([f"A{end_row + 1}:E{leftover}"])
+
+
+def write_status_tabs(spreadsheet, leave_rows, active_rows, inactive_rows):
+    leave_ws = get_or_create_worksheet(spreadsheet, LEAVE_SHEET_NAME)
+    active_ws = get_or_create_worksheet(spreadsheet, ACTIVE_SHEET_NAME)
+    inactive_ws = get_or_create_worksheet(spreadsheet, INACTIVE_SHEET_NAME)
+    _write_status_table(leave_ws, LEAVE_HEADERS, leave_rows)
+    _write_status_table(active_ws, ACTIVE_HEADERS, active_rows)
+    _write_status_table(inactive_ws, INACTIVE_HEADERS, inactive_rows)
+
+
+def status_row(member_row, status_text):
+    return _pad_row(member_row[:4] + [status_text], 5)
 
 
 def ensure_sheet_headers(sheet):
     current = sheet.row_values(1)
     if current[: len(SHEET_HEADERS)] != SHEET_HEADERS:
-        sheet.update("A1:I1", [SHEET_HEADERS], value_input_option="USER_ENTERED")
+        sheet.update("A1:E1", [SHEET_HEADERS], value_input_option="USER_ENTERED")
 
 
 def load_sheet_profile(discord_id):
@@ -439,62 +588,80 @@ def load_sheet_profile(discord_id):
     except Exception:
         return None
     target = str(int(discord_id))
+    headers = rows[0] if rows else []
     for row in rows[1:] if rows else []:
         if not row or not str(row[0]).strip().isdigit():
             continue
         if str(int(str(row[0]).strip())) != target:
             continue
-        padded = _pad_row(row)
-        return {
-            "discord_id": int(discord_id),
-            "discord_name": (padded[1] or "").strip(),
-            "character_name": (padded[2] or "").strip(),
-            "main_class": (padded[3] or "").strip(),
-            "branch": (padded[4] or "").strip(),
-            "sheet_label": (padded[1] or "").strip(),
-        }
+        parsed = parse_member_row(row, headers)
+        parsed["discord_id"] = int(discord_id)
+        return parsed
     return None
 
 
-def upsert_member_sheet_values(values):
-    """用 A 欄 Discord ID 更新或新增一列；單筆也走一次 range update，不用 append_row。"""
-    sheet = get_member_sheet()
-    values = _pad_row(values)
+def _upsert_one_status_sheet(worksheet, headers, discord_id, row_or_none):
+    rows = worksheet.get_all_values()
+    data_rows = []
+    for row in rows[1:] if rows else []:
+        if not row:
+            continue
+        if str(row[0]).strip() == str(discord_id).strip():
+            continue
+        data_rows.append(_pad_row(row, 5))
+    if row_or_none:
+        data_rows.append(_pad_row(row_or_none, 5))
+    _write_status_table(worksheet, headers, data_rows)
+
+
+def upsert_member_sheet_values(values, status=None, spreadsheet=None):
+    """更新成員名單 A~E，並連動請假／活躍／未活躍分頁。"""
+    spreadsheet = spreadsheet or get_spreadsheet()
+    sheet = get_member_sheet(spreadsheet)
+    values = _pad_row(values, MEMBER_WIDTH)
     discord_id = str(values[0]).strip()
     rows = sheet.get_all_values()
-    values[4] = resolve_branch(
-        values[4],
+    values[3] = resolve_branch(
+        values[3],
         lookup_sheet_branch(existing_branch_map(rows), discord_id),
     )
-    if not rows or rows[0][: len(SHEET_HEADERS)] != SHEET_HEADERS:
-        data_rows = [_pad_row(r) for r in rows[1:]] if rows else []
-        replaced = False
-        for idx, row in enumerate(data_rows):
-            if str(row[0]).strip() == discord_id:
-                data_rows[idx] = values
-                replaced = True
-                break
-        if not replaced:
-            data_rows.append(values)
-        _write_member_table_batch(sheet, data_rows)
-        return
-
-    target_row = None
-    for index, row in enumerate(rows[1:], start=2):
-        if row and str(row[0]).strip() == discord_id:
-            target_row = index
+    data_rows = [_pad_row(r, MEMBER_WIDTH) for r in rows[1:]] if rows else []
+    replaced = False
+    for idx, row in enumerate(data_rows):
+        if str(row[0]).strip() == discord_id:
+            data_rows[idx] = values
+            replaced = True
             break
-    if target_row:
-        sheet.update(f"A{target_row}:I{target_row}", [values], value_input_option="USER_ENTERED")
-        return
-    next_row = max(len(rows) + 1, 2)
-    sheet.update(f"A{next_row}:I{next_row}", [values], value_input_option="USER_ENTERED")
+    if not replaced:
+        data_rows.append(values)
+    _write_member_table_batch(sheet, data_rows)
+
+    if status is not None:
+        leave_ws = get_or_create_worksheet(spreadsheet, LEAVE_SHEET_NAME)
+        active_ws = get_or_create_worksheet(spreadsheet, ACTIVE_SHEET_NAME)
+        inactive_ws = get_or_create_worksheet(spreadsheet, INACTIVE_SHEET_NAME)
+        leave_row = status_row(values, status["leave"]) if status.get("leave") else None
+        active_row = status_row(values, status["active"]) if status.get("active") else None
+        inactive_row = (
+            status_row(values, status["inactive"]) if status.get("inactive") else None
+        )
+        _upsert_one_status_sheet(leave_ws, LEAVE_HEADERS, discord_id, leave_row)
+        _upsert_one_status_sheet(active_ws, ACTIVE_HEADERS, discord_id, active_row)
+        _upsert_one_status_sheet(inactive_ws, INACTIVE_HEADERS, discord_id, inactive_row)
+
+
+def _resolve_profile_branch(profile, member, force=False, sheet_branch=""):
+    role_branch = branch_from_member_roles(member)
+    extra_branch = profile.get("branch")
+    if force:
+        return resolve_branch(extra_branch, role_branch, sheet_branch)
+    return resolve_branch(role_branch, extra_branch, sheet_branch)
 
 
 def sync_member_by_discord_id(
     discord_id, member=None, extra_profile=None, days=None, force=False
 ):
-    """把單一成員寫進試算表。force=True 時（幹部修改）即使暱稱格式不符也會寫入。"""
+    """把單一成員寫進成員名單，並連動請假／活躍／未活躍分頁。"""
     display_name = discord_member_display_name(member)
     if not force and not is_guild_formatted_display_name(display_name):
         return None
@@ -518,8 +685,6 @@ def sync_member_by_discord_id(
         if not (profile.get("character_name") or "").strip():
             profile["character_name"] = row["character_name"] or ""
         db_branch = row["branch"] or ""
-    # 幹部明確送出的分會優先於舊的資料庫／試算表值
-    profile["branch"] = resolve_branch(extra_branch, db_branch)
     if member is not None:
         profile["discord_name"] = display_name or str(member)
         if getattr(member, "joined_at", None):
@@ -530,17 +695,39 @@ def sync_member_by_discord_id(
             )
     if is_guild_formatted_display_name(display_name):
         apply_display_name_profile(profile, display_name)
-    values = build_member_sheet_row(profile, cursor=cursor, days=days)
+    sheet_branch = ""
+    try:
+        existing = load_sheet_profile(discord_id) or {}
+        sheet_branch = existing.get("branch") or ""
+    except Exception:
+        sheet_branch = ""
+    profile["branch"] = _resolve_profile_branch(
+        {"branch": extra_branch or db_branch},
+        member,
+        force=force,
+        sheet_branch=sheet_branch,
+    )
+    if force:
+        profile["branch"] = resolve_branch(extra_branch, profile.get("branch"), db_branch, sheet_branch)
+    payload = collect_member_sync_payload(profile, cursor=cursor, days=days)
     conn.close()
-    upsert_member_sheet_values(values)
-    return values
+    upsert_member_sheet_values(
+        payload["member"],
+        status={
+            "leave": payload["leave"],
+            "active": payload["active"],
+            "inactive": payload["inactive"],
+        },
+    )
+    return payload["member"]
 
 
 def sync_all_members_to_sheet(guild, days=None):
-    """只同步 Discord 顯示名稱符合公會職業格式的成員，一次寫回試算表。"""
+    """同步成員名單 A~E，並把請假／活躍／未活躍寫到對應分頁。"""
     days = days if days is not None else INACTIVE_DAYS
     now = datetime.now()
-    sheet = get_member_sheet()
+    spreadsheet = get_spreadsheet()
+    sheet = get_member_sheet(spreadsheet)
 
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -571,16 +758,17 @@ def sync_all_members_to_sheet(guild, days=None):
                 "discord_id": member.id,
                 "discord_name": display_name,
                 "character_name": rec.get("character_name") or "",
-                "branch": resolve_branch(
-                    rec.get("branch"),
-                    lookup_sheet_branch(sheet_branches, member.id),
-                ),
                 "joined_at": member.joined_at.strftime("%Y-%m-%d %H:%M:%S")
                 if member.joined_at
                 else "",
                 "joined_at_dt": member.joined_at,
             }
             apply_display_name_profile(profile, display_name)
+            profile["branch"] = resolve_branch(
+                branch_from_member_roles(member),
+                rec.get("branch"),
+                lookup_sheet_branch(sheet_branches, member.id),
+            )
             payloads[member.id] = profile
     ordered_ids = []
     seen = set()
@@ -596,11 +784,23 @@ def sync_all_members_to_sheet(guild, days=None):
             ordered_ids.append(did)
             seen.add(did)
 
-    data_rows = [
-        build_member_sheet_row(payloads[did], cursor=cursor, now=now, days=days)
-        for did in ordered_ids
-    ]
+    member_rows = []
+    leave_rows = []
+    active_rows = []
+    inactive_rows = []
+    for did in ordered_ids:
+        payload = collect_member_sync_payload(
+            payloads[did], cursor=cursor, now=now, days=days
+        )
+        member_rows.append(payload["member"])
+        if payload["leave"]:
+            leave_rows.append(status_row(payload["member"], payload["leave"]))
+        if payload["active"]:
+            active_rows.append(status_row(payload["member"], payload["active"]))
+        if payload["inactive"]:
+            inactive_rows.append(status_row(payload["member"], payload["inactive"]))
     conn.close()
 
-    _write_member_table_batch(sheet, data_rows)
+    _write_member_table_batch(sheet, member_rows)
+    write_status_tabs(spreadsheet, leave_rows, active_rows, inactive_rows)
     return len(payloads)
