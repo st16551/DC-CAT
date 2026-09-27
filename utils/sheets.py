@@ -103,14 +103,15 @@ def _character_from_display_name(display_name: str, job: str) -> str:
 
 
 def apply_display_name_profile(profile: dict, display_name: str) -> bool:
-    """用伺服器顯示名稱覆寫職業／人員資料；不符合格式則不寫入。"""
+    """用伺服器顯示名稱補上職業／人員資料；已有明確欄位則不覆蓋。"""
     job = match_guild_class_prefix(display_name)
     if not job:
         return False
     profile["sheet_label"] = display_name.strip()
-    profile["main_class"] = normalize_class_name(job)
+    if not (profile.get("main_class") or "").strip():
+        profile["main_class"] = normalize_class_name(job)
     extracted = _character_from_display_name(display_name.strip(), job)
-    if extracted:
+    if extracted and not (profile.get("character_name") or "").strip():
         profile["character_name"] = extracted
     return True
 
@@ -431,6 +432,30 @@ def ensure_sheet_headers(sheet):
         sheet.update("A1:I1", [SHEET_HEADERS], value_input_option="USER_ENTERED")
 
 
+def load_sheet_profile(discord_id):
+    """依 A 欄 Discord ID 讀回試算表既有列，供修改成員時預填。"""
+    try:
+        rows = get_member_sheet().get_all_values()
+    except Exception:
+        return None
+    target = str(int(discord_id))
+    for row in rows[1:] if rows else []:
+        if not row or not str(row[0]).strip().isdigit():
+            continue
+        if str(int(str(row[0]).strip())) != target:
+            continue
+        padded = _pad_row(row)
+        return {
+            "discord_id": int(discord_id),
+            "discord_name": (padded[1] or "").strip(),
+            "character_name": (padded[2] or "").strip(),
+            "main_class": (padded[3] or "").strip(),
+            "branch": (padded[4] or "").strip(),
+            "sheet_label": (padded[1] or "").strip(),
+        }
+    return None
+
+
 def upsert_member_sheet_values(values):
     """用 A 欄 Discord ID 更新或新增一列；單筆也走一次 range update，不用 append_row。"""
     sheet = get_member_sheet()
@@ -466,10 +491,12 @@ def upsert_member_sheet_values(values):
     sheet.update(f"A{next_row}:I{next_row}", [values], value_input_option="USER_ENTERED")
 
 
-def sync_member_by_discord_id(discord_id, member=None, extra_profile=None, days=None):
-    """把單一成員寫進試算表；顯示名稱不符合「職業-」格式則略過。"""
+def sync_member_by_discord_id(
+    discord_id, member=None, extra_profile=None, days=None, force=False
+):
+    """把單一成員寫進試算表。force=True 時（幹部修改）即使暱稱格式不符也會寫入。"""
     display_name = discord_member_display_name(member)
-    if not is_guild_formatted_display_name(display_name):
+    if not force and not is_guild_formatted_display_name(display_name):
         return None
 
     conn = get_db_connection()
@@ -488,9 +515,11 @@ def sync_member_by_discord_id(discord_id, member=None, extra_profile=None, days=
     extra_branch = profile.get("branch")
     if row:
         profile.setdefault("discord_name", row["discord_name"] or "")
-        profile.setdefault("character_name", row["character_name"] or "")
+        if not (profile.get("character_name") or "").strip():
+            profile["character_name"] = row["character_name"] or ""
         db_branch = row["branch"] or ""
-    profile["branch"] = resolve_branch(db_branch, extra_branch)
+    # 幹部明確送出的分會優先於舊的資料庫／試算表值
+    profile["branch"] = resolve_branch(extra_branch, db_branch)
     if member is not None:
         profile["discord_name"] = display_name or str(member)
         if getattr(member, "joined_at", None):
@@ -499,7 +528,8 @@ def sync_member_by_discord_id(discord_id, member=None, extra_profile=None, days=
                 "joined_at",
                 member.joined_at.strftime("%Y-%m-%d %H:%M:%S"),
             )
-    apply_display_name_profile(profile, display_name)
+    if is_guild_formatted_display_name(display_name):
+        apply_display_name_profile(profile, display_name)
     values = build_member_sheet_row(profile, cursor=cursor, days=days)
     conn.close()
     upsert_member_sheet_values(values)
