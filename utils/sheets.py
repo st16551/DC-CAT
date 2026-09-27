@@ -17,9 +17,12 @@ SPREADSHEET_ID = os.getenv(
     "SPREADSHEET_ID", "12AP1pzhqeskwhYY5piaYGasRNifLdCpgoddjxVM5yg4"
 )
 MEMBER_SHEET_NAME = os.getenv("MEMBER_SHEET_NAME", "成員名單")
+FRIENDS_SHEET_NAME = os.getenv("FRIENDS_SHEET_NAME", "好朋友")
 LEAVE_SHEET_NAME = os.getenv("LEAVE_SHEET_NAME", "請假")
 ACTIVE_SHEET_NAME = os.getenv("ACTIVE_SHEET_NAME", "活躍")
 INACTIVE_SHEET_NAME = os.getenv("INACTIVE_SHEET_NAME", "未活躍")
+MEMBER_ROLE_ID = 1527550855631339601
+MEMBER_ROLE_NAME = "成員"
 INACTIVE_DAYS = int(os.getenv("INACTIVE_DAYS", "14"))
 
 SCOPES = [
@@ -114,8 +117,20 @@ def match_guild_class_prefix(display_name: str):
     return None
 
 
+def match_guild_class_in_name(display_name: str):
+    """開頭是職業，或名稱中間含職業（例如 巴哈姆特-聖騎(夏天)）。"""
+    found = match_guild_class_prefix(display_name)
+    if found:
+        return found
+    name = display_name or ""
+    for prefix in _CLASS_PREFIXES_SORTED:
+        if prefix in name:
+            return prefix
+    return None
+
+
 def is_guild_formatted_display_name(display_name: str) -> bool:
-    return match_guild_class_prefix(display_name) is not None
+    return match_guild_class_in_name(display_name) is not None
 
 
 def discord_member_display_name(member) -> str:
@@ -134,17 +149,37 @@ def _character_from_display_name(display_name: str, job: str) -> str:
 
 
 def apply_display_name_profile(profile: dict, display_name: str) -> bool:
-    """用伺服器顯示名稱補上職業／人員資料；已有明確欄位則不覆蓋。"""
-    job = match_guild_class_prefix(display_name)
+    """用伺服器顯示名稱作為人員資料；職業能從名稱解析就補上。"""
+    name = (display_name or "").strip()
+    if name:
+        profile["sheet_label"] = name
+    job = match_guild_class_in_name(name)
     if not job:
-        return False
-    profile["sheet_label"] = display_name.strip()
+        return bool(name)
     if not (profile.get("main_class") or "").strip():
         profile["main_class"] = normalize_class_name(job)
-    extracted = _character_from_display_name(display_name.strip(), job)
+    extracted = ""
+    if name.startswith(job):
+        extracted = _character_from_display_name(name, job)
     if extracted and not (profile.get("character_name") or "").strip():
         profile["character_name"] = extracted
     return True
+
+
+def has_member_role(member):
+    if member is None:
+        return False
+    for role in getattr(member, "roles", None) or []:
+        if getattr(role, "id", None) == MEMBER_ROLE_ID:
+            return True
+        if (getattr(role, "name", "") or "").strip() == MEMBER_ROLE_NAME:
+            return True
+    return False
+
+
+def is_official_roster_member(member):
+    """正式公會成員：同時有「成員」與分會身分組。"""
+    return has_member_role(member) and bool(branch_from_member_roles(member))
 
 
 def branch_from_role_name(role_name: str):
@@ -234,6 +269,11 @@ def get_member_sheet(spreadsheet=None):
         return spreadsheet.worksheet(MEMBER_SHEET_NAME)
     except Exception:
         return spreadsheet.sheet1
+
+
+def get_friends_sheet(spreadsheet=None):
+    spreadsheet = spreadsheet or get_spreadsheet()
+    return get_or_create_worksheet(spreadsheet, FRIENDS_SHEET_NAME)
 
 
 def detect_member_layout(headers):
@@ -539,10 +579,9 @@ def _pad_row(values, width=MEMBER_WIDTH):
     return row
 
 
-def _write_member_table_batch(sheet, data_rows):
-    """一次寫入成員名單 A1:E，並清掉舊的 F~I（請假／活躍欄）。"""
-    width = len(SHEET_HEADERS)
-    matrix = [SHEET_HEADERS] + [_pad_row(row, width) for row in data_rows]
+def _write_named_table(sheet, headers, data_rows):
+    width = len(headers)
+    matrix = [headers] + [_pad_row(row, width) for row in data_rows]
     end_row = len(matrix)
     sheet.update(f"A1:E{end_row}", matrix, value_input_option="USER_ENTERED")
     leftover = max(sheet.row_count, end_row)
@@ -550,6 +589,15 @@ def _write_member_table_batch(sheet, data_rows):
     if leftover > end_row:
         clears.append(f"A{end_row + 1}:E{leftover}")
     sheet.batch_clear(clears)
+
+
+def _write_member_table_batch(sheet, data_rows):
+    """一次寫入成員名單 A1:E，並清掉舊的 F~I。"""
+    _write_named_table(sheet, SHEET_HEADERS, data_rows)
+
+
+def _write_friends_table_batch(sheet, data_rows):
+    _write_named_table(sheet, SHEET_HEADERS, data_rows)
 
 
 def _write_status_table(sheet, headers, data_rows):
@@ -658,12 +706,88 @@ def _resolve_profile_branch(profile, member, force=False, sheet_branch=""):
     return resolve_branch(role_branch, extra_branch, sheet_branch)
 
 
+def _remove_id_from_rows(rows, discord_id):
+    target = str(discord_id).strip()
+    kept = []
+    for row in rows[1:] if rows else []:
+        if not row:
+            continue
+        if str(row[0]).strip() == target:
+            continue
+        kept.append(_pad_row(row, MEMBER_WIDTH))
+    return kept
+
+
+def _build_member_profile(member, rec, sheet_branch=""):
+    display_name = discord_member_display_name(member) or str(member)
+    profile = {
+        "discord_id": member.id,
+        "discord_name": display_name,
+        "character_name": rec.get("character_name") or "",
+        "joined_at": member.joined_at.strftime("%Y-%m-%d %H:%M:%S")
+        if member.joined_at
+        else "",
+        "joined_at_dt": member.joined_at,
+    }
+    apply_display_name_profile(profile, display_name)
+    profile["branch"] = resolve_branch(
+        branch_from_member_roles(member),
+        rec.get("branch"),
+        sheet_branch,
+    )
+    return profile
+
+
+def _upsert_game_character(cursor, profile):
+    cursor.execute(
+        """
+        INSERT INTO game_characters (
+            discord_id, discord_name, game_name, character_name, main_class, branch
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(discord_id) DO UPDATE SET
+            discord_name = excluded.discord_name,
+            character_name = excluded.character_name,
+            main_class = excluded.main_class,
+            branch = CASE
+                WHEN excluded.branch IS NULL OR excluded.branch = '' THEN game_characters.branch
+                ELSE excluded.branch
+            END
+        """,
+        (
+            int(profile["discord_id"]),
+            profile.get("discord_name") or "",
+            "靈谷",
+            profile.get("character_name") or "",
+            profile.get("main_class") or "",
+            profile.get("branch") or "",
+        ),
+    )
+def _ordered_ids(existing_rows, payloads):
+    ordered_ids = []
+    seen = set()
+    for row in existing_rows[1:] if existing_rows else []:
+        if not row or not str(row[0]).strip().isdigit():
+            continue
+        did = int(str(row[0]).strip())
+        if did in payloads and did not in seen:
+            ordered_ids.append(did)
+            seen.add(did)
+    for did in payloads:
+        if did not in seen:
+            ordered_ids.append(did)
+            seen.add(did)
+    return ordered_ids
+
+
 def sync_member_by_discord_id(
     discord_id, member=None, extra_profile=None, days=None, force=False
 ):
-    """把單一成員寫進成員名單，並連動請假／活躍／未活躍分頁。"""
+    """依身分組寫入成員名單或好朋友，並連動請假／活躍／未活躍分頁。"""
     display_name = discord_member_display_name(member)
-    if not force and not is_guild_formatted_display_name(display_name):
+    has_member = has_member_role(member)
+    role_branch = branch_from_member_roles(member)
+    if not force and not has_member:
         return None
 
     conn = get_db_connection()
@@ -678,8 +802,8 @@ def sync_member_by_discord_id(
     row = cursor.fetchone()
     profile = extra_profile.copy() if extra_profile else {}
     profile["discord_id"] = int(discord_id)
-    db_branch = ""
     extra_branch = profile.get("branch")
+    db_branch = ""
     if row:
         profile.setdefault("discord_name", row["discord_name"] or "")
         if not (profile.get("character_name") or "").strip():
@@ -693,41 +817,76 @@ def sync_member_by_discord_id(
                 "joined_at",
                 member.joined_at.strftime("%Y-%m-%d %H:%M:%S"),
             )
-    if is_guild_formatted_display_name(display_name):
-        apply_display_name_profile(profile, display_name)
+    apply_display_name_profile(profile, display_name)
     sheet_branch = ""
     try:
         existing = load_sheet_profile(discord_id) or {}
         sheet_branch = existing.get("branch") or ""
     except Exception:
         sheet_branch = ""
-    profile["branch"] = _resolve_profile_branch(
-        {"branch": extra_branch or db_branch},
-        member,
-        force=force,
-        sheet_branch=sheet_branch,
+    profile["branch"] = resolve_branch(
+        extra_branch if force else None,
+        role_branch,
+        extra_branch,
+        db_branch,
+        sheet_branch,
     )
-    if force:
-        profile["branch"] = resolve_branch(extra_branch, profile.get("branch"), db_branch, sheet_branch)
     payload = collect_member_sync_payload(profile, cursor=cursor, days=days)
+    _upsert_game_character(cursor, profile)
+    conn.commit()
     conn.close()
-    upsert_member_sheet_values(
-        payload["member"],
-        status={
+
+    official = has_member and bool(role_branch or (force and extra_branch))
+    spreadsheet = get_spreadsheet()
+    member_sheet = get_member_sheet(spreadsheet)
+    friends_sheet = get_friends_sheet(spreadsheet)
+    values = payload["member"]
+    member_rows = _remove_id_from_rows(member_sheet.get_all_values(), discord_id)
+    friend_rows = _remove_id_from_rows(friends_sheet.get_all_values(), discord_id)
+    if official:
+        member_rows.append(values)
+        status = {
             "leave": payload["leave"],
             "active": payload["active"],
             "inactive": payload["inactive"],
-        },
+        }
+    else:
+        friend_rows.append(values)
+        status = {"leave": "", "active": "", "inactive": ""}
+    _write_member_table_batch(member_sheet, member_rows)
+    _write_friends_table_batch(friends_sheet, friend_rows)
+
+    leave_ws = get_or_create_worksheet(spreadsheet, LEAVE_SHEET_NAME)
+    active_ws = get_or_create_worksheet(spreadsheet, ACTIVE_SHEET_NAME)
+    inactive_ws = get_or_create_worksheet(spreadsheet, INACTIVE_SHEET_NAME)
+    _upsert_one_status_sheet(
+        leave_ws,
+        LEAVE_HEADERS,
+        discord_id,
+        status_row(values, status["leave"]) if status["leave"] else None,
     )
-    return payload["member"]
+    _upsert_one_status_sheet(
+        active_ws,
+        ACTIVE_HEADERS,
+        discord_id,
+        status_row(values, status["active"]) if status["active"] else None,
+    )
+    _upsert_one_status_sheet(
+        inactive_ws,
+        INACTIVE_HEADERS,
+        discord_id,
+        status_row(values, status["inactive"]) if status["inactive"] else None,
+    )
+    return values
 
 
 def sync_all_members_to_sheet(guild, days=None):
-    """同步成員名單 A~E，並把請假／活躍／未活躍寫到對應分頁。"""
+    """有「成員」+分會 → 成員名單；只有成員沒有分會 → 好朋友。"""
     days = days if days is not None else INACTIVE_DAYS
     now = datetime.now()
     spreadsheet = get_spreadsheet()
     sheet = get_member_sheet(spreadsheet)
+    friends_sheet = get_friends_sheet(spreadsheet)
 
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -742,55 +901,39 @@ def sync_all_members_to_sheet(guild, days=None):
         for r in cursor.fetchall()
     }
 
-    existing = sheet.get_all_values()
-    sheet_branches = existing_branch_map(existing)
+    existing_members = sheet.get_all_values()
+    existing_friends = friends_sheet.get_all_values()
+    sheet_branches = existing_branch_map(existing_members)
+    sheet_branches.update(existing_branch_map(existing_friends))
 
-    payloads = {}
+    official = {}
+    friends = {}
     if guild is not None:
         for member in guild.members:
             if member.bot:
                 continue
-            display_name = discord_member_display_name(member)
-            if not is_guild_formatted_display_name(display_name):
+            if not has_member_role(member):
                 continue
             rec = db_profiles.get(member.id, {})
-            profile = {
-                "discord_id": member.id,
-                "discord_name": display_name,
-                "character_name": rec.get("character_name") or "",
-                "joined_at": member.joined_at.strftime("%Y-%m-%d %H:%M:%S")
-                if member.joined_at
-                else "",
-                "joined_at_dt": member.joined_at,
-            }
-            apply_display_name_profile(profile, display_name)
-            profile["branch"] = resolve_branch(
-                branch_from_member_roles(member),
-                rec.get("branch"),
+            profile = _build_member_profile(
+                member,
+                rec,
                 lookup_sheet_branch(sheet_branches, member.id),
             )
-            payloads[member.id] = profile
-    ordered_ids = []
-    seen = set()
-    for row in existing[1:]:
-        if not row or not str(row[0]).strip().isdigit():
-            continue
-        did = int(str(row[0]).strip())
-        if did in payloads and did not in seen:
-            ordered_ids.append(did)
-            seen.add(did)
-    for did in payloads:
-        if did not in seen:
-            ordered_ids.append(did)
-            seen.add(did)
+            _upsert_game_character(cursor, profile)
+            if branch_from_member_roles(member):
+                official[member.id] = profile
+            else:
+                friends[member.id] = profile
+    conn.commit()
 
     member_rows = []
     leave_rows = []
     active_rows = []
     inactive_rows = []
-    for did in ordered_ids:
+    for did in _ordered_ids(existing_members, official):
         payload = collect_member_sync_payload(
-            payloads[did], cursor=cursor, now=now, days=days
+            official[did], cursor=cursor, now=now, days=days
         )
         member_rows.append(payload["member"])
         if payload["leave"]:
@@ -799,8 +942,16 @@ def sync_all_members_to_sheet(guild, days=None):
             active_rows.append(status_row(payload["member"], payload["active"]))
         if payload["inactive"]:
             inactive_rows.append(status_row(payload["member"], payload["inactive"]))
+
+    friend_rows = []
+    for did in _ordered_ids(existing_friends, friends):
+        payload = collect_member_sync_payload(
+            friends[did], cursor=cursor, now=now, days=days
+        )
+        friend_rows.append(payload["member"])
     conn.close()
 
     _write_member_table_batch(sheet, member_rows)
+    _write_friends_table_batch(friends_sheet, friend_rows)
     write_status_tabs(spreadsheet, leave_rows, active_rows, inactive_rows)
-    return len(payloads)
+    return {"members": len(official), "friends": len(friends)}
