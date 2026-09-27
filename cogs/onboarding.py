@@ -1,3 +1,5 @@
+import os
+import json
 import sqlite3
 import discord
 from discord import app_commands
@@ -27,14 +29,22 @@ ROLE_IDS = {
 }
 
 SPREADSHEET_ID = "12AP1pzhqeskwhYY5piaYGasRNifLdCpgoddjxVM5yg4"
-CREDENTIALS_FILE = "credentials.json"
 
 def get_gspread_client():
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive"
     ]
-    creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=scopes)
+    
+    # 支援從環境變數讀取 JSON 金鑰內容（配合您的雲端設定）
+    creds_json_str = os.getenv("GOOGLE_CREDENTIALS") # 請確認您環境變數的 KEY 名稱，若叫 GOOGLE_CREDENTIALS 即可直接讀取
+    if creds_json_str:
+        creds_dict = json.loads(creds_json_str)
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    else:
+        # 如果沒有環境變數，則退回原本的檔案讀取方式（本地測試用）
+        creds = Credentials.from_service_account_file("credentials.json", scopes=scopes)
+        
     client = gspread.authorize(creds)
     return client
 
@@ -42,11 +52,9 @@ def init_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     
-    # 1. 檢查現有的 table 結構與欄位
     cursor.execute("PRAGMA table_info(game_characters);")
     existing_columns = [col[1] for col in cursor.fetchall()]
     
-    # 2. 嘗試建立具有 UNIQUE 約束的表格（如果本來就沒有的話）
     try:
         cursor.execute(
             """
@@ -64,7 +72,6 @@ def init_db():
     except Exception as e:
         print(f"資料庫建立提示: {e}")
 
-    # 3. 【完整性驗證防呆】檢查是否有 UNIQUE 索引，沒有的話自動重建表格避免 ON CONFLICT 報錯
     cursor.execute("PRAGMA index_list('game_characters');")
     indexes = cursor.fetchall()
     has_unique = any(idx[2] == 1 for idx in indexes)
@@ -86,7 +93,6 @@ def init_db():
         """
         )
     else:
-        # 如果表已存在但可能缺欄位，進行安全補齊
         if "discord_name" not in existing_columns and existing_columns:
             cursor.execute("ALTER TABLE game_characters ADD COLUMN discord_name TEXT;")
         if "game_name" not in existing_columns and existing_columns:
