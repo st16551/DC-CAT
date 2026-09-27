@@ -1,39 +1,25 @@
-import sqlite3
 import discord
 from discord import app_commands
 from discord.ext import commands
-import gspread
-from google.oauth2.service_account import Credentials
+from utils.database import get_db_connection
+from utils.sheets import get_member_sheet, normalize_class_name
 
-DB_FILE = "guild_database.db"
-SPREADSHEET_ID = "12AP1pzhqeskwhYY5piaYGasRNifLdCpgoddjxVM5yg4"
-CREDENTIALS_FILE = "credentials.json"
-
-# 📝 身分組 ID 對應字典
 ROLE_IDS = {
     "牧師": 1529725865024557196,
     "聖騎": 1529726272471568454,
+    "聖騎士": 1529726272471568454,
     "槍手": 1529726360568987708,
     "死靈": 1529726490734886922,
     "法師": 1529726652341420113,
     "忍者": 1529726861570216083,
     "編織": 1529727042516422798,
     "戰士": 1529734718193668127,
-    
-    # 分會身分組
     "1會": 1541087729088200765,
     "2会": 1541087803151098079,
+    "2會": 1541087803151098079,
     "3会": 1541087848298446998,
+    "3會": 1541087848298446998,
 }
-
-def get_gspread_client():
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive"
-    ]
-    creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=scopes)
-    client = gspread.authorize(creds)
-    return client
 
 class EditMemberByDiscordModal(discord.ui.Modal, title="🛠️ 修改成員資料"):
     def __init__(self, target_discord_id: int, db_data):
@@ -66,8 +52,12 @@ class EditMemberByDiscordModal(discord.ui.Modal, title="🛠️ 修改成員資�
 
     async def on_submit(self, interaction: discord.Interaction):
         new_char_name = self.new_char_name_input.value.strip()
-        new_class = self.class_input.value.strip()
+        new_class = normalize_class_name(self.class_input.value.strip())
         new_branch = self.branch_input.value.strip()
+        if new_branch == "2会":
+            new_branch = "2會"
+        if new_branch == "3会":
+            new_branch = "3會"
 
         if new_branch not in ["1會", "2會", "3會"]:
             await interaction.response.send_message("❌ 分會名稱必須是 `1會`、`2會` 或 `3會`！", ephemeral=True)
@@ -78,7 +68,7 @@ class EditMemberByDiscordModal(discord.ui.Modal, title="🛠️ 修改成員資�
         old_branch = self.db_data[5] if self.db_data else ""
 
         # 1. 更新本地 SQLite
-        conn = sqlite3.connect(DB_FILE)
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("""
             UPDATE game_characters 
@@ -91,8 +81,7 @@ class EditMemberByDiscordModal(discord.ui.Modal, title="🛠️ 修改成員資�
         # 2. 同步更新 Google 試算表[cite: 1]
         sheet_updated = False
         try:
-            client = get_gspread_client()
-            sheet = client.open_by_key(SPREADSHEET_ID).sheet1
+            sheet = get_member_sheet()
             
             cell = sheet.find(str(self.target_discord_id))
             if cell:
@@ -158,7 +147,7 @@ class EditMemberCog(commands.Cog):
         target_id_int = member.id
         target_id_str = str(target_id_int)
 
-        conn = sqlite3.connect(DB_FILE)
+        conn = get_db_connection()
         cursor = conn.cursor()
         
         # 🛡️ 雙重保險查詢：支援數字與文字欄位比對

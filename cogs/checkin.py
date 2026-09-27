@@ -3,13 +3,13 @@
 # 檔案用途：公會簽到模組（具備永久按鈕、SQLite 持久化、一鍵重製與經驗/SU幣保底機制）
 # ==================================================
 
-from datetime import datetime
+from datetime import datetime, timedelta
 import discord
 from discord import app_commands
 from discord.ext import commands
 from utils.economy_helper import update_user_coins
 from utils.level_helper import add_user_xp
-from utils.database import get_db_connection  # 🛡️ 引入統一的絕對路徑連線工具
+from utils.database import get_db_connection
 
 def init_checkin_table():
     """確保資料庫中存在簽到表格"""
@@ -61,7 +61,15 @@ class PersistentCheckinView(discord.ui.View):
                 return await interaction.response.send_message(
                     "⚠️ 你今天已經簽到過了，明天請早！", ephemeral=True
                 )
-            streak += 1
+            try:
+                last_dt = datetime.strptime(last_date, "%Y-%m-%d").date()
+                today_dt = datetime.strptime(today_str, "%Y-%m-%d").date()
+                if last_dt == today_dt - timedelta(days=1):
+                    streak += 1
+                else:
+                    streak = 1
+            except Exception:
+                streak = 1
         else:
             streak = 1
 

@@ -1,85 +1,83 @@
 from flask import Flask, render_template_string, request, redirect, url_for, session
 import sqlite3
+import os
 import requests
 import csv
 import io
 import json
 from datetime import datetime
+from utils.database import get_db_connection, init_db
+from utils.sheets import SPREADSHEET_ID, format_member_display, get_member_sheet
 
 app = Flask(__name__)
-app.secret_key = "my_guild_secret_key_abcxyz888_666"
+app.secret_key = os.getenv("FLASK_SECRET_KEY", "change-me-in-production")
 
 # ==================== 🛠️ Discord 設定 ====================
-CLIENT_ID = "1549954226937929778"
-CLIENT_SECRET = "Mh4hq0GCl5oWSjzHEIPQgKnIw7eddvjg"
-REDIRECT_URI = "https://dc-cat.onrender.com/callback"
+CLIENT_ID = os.getenv("DISCORD_CLIENT_ID", "1549954226937929778")
+CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET", "")
+REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI", "https://dc-cat.onrender.com/callback")
 
 ADMIN_DISCORD_IDS = [
-    "407651643836858388",
+    id.strip() for id in os.getenv("ADMIN_DISCORD_IDS", "407651643836858388").split(",") if id.strip()
 ]
 
 # Google 試算表公開 CSV 下載網址 ("成員名單" 工作表)
-GSHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/12AP1pzhqeskwhYY5piaYGasRNifLdCpgoddjxVM5yg4/gviz/tq?tqx=out:csv&sheet=成員名單"
+GSHEET_CSV_URL = (
+    f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/gviz/tq?tqx=out:csv&sheet=成員名單"
+)
 
 def fetch_guild_members_from_sheet():
-    """從 Google 試算表自動同步最新成員名單（唯讀，絕不修改你的表單）"""
+    """優先讀本地已同步成員，再讀試算表，最後才用公開 CSV。"""
     members = []
     try:
-        response = requests.get(GSHEET_CSV_URL)
-        if response.status_code == 200:
-            decoded_content = response.content.decode('utf-8')
-            reader = csv.reader(io.StringIO(decoded_content))
-            next(reader, None) # 跳過標題列
-            for row in reader:
-                if len(row) >= 3:
-                    discord_account = row[1].strip() if len(row) > 1 else ""
-                    game_name = row[2].strip() if len(row) > 2 else ""
-                    job = row[3].strip() if len(row) > 3 else ""
-                    display_str = f"{job}-{game_name}({discord_account})" if job and game_name else (game_name or discord_account)
-                    if display_str and display_str not in members:
-                        members.append(display_str)
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT main_class, character_name, discord_name
+            FROM game_characters
+            WHERE character_name IS NOT NULL AND TRIM(character_name) != ''
+            """
+        )
+        for row in cursor.fetchall():
+            job = (row["main_class"] or "").strip()
+            char = (row["character_name"] or "").strip()
+            disc = (row["discord_name"] or "").strip()
+            display_str = f"{job}-{char}({disc})" if job and char else (char or disc)
+            if display_str and display_str not in members:
+                members.append(display_str)
+        conn.close()
     except Exception as e:
-        print("讀取 Google 試算表失敗，使用備用名單:", e)
+        print("讀取本地成員名單失敗:", e)
+
+    try:
+        sheet = get_member_sheet()
+        rows = sheet.get_all_values()
+        for row in rows[1:]:
+            display_str = format_member_display(row)
+            if display_str and display_str not in members:
+                members.append(display_str)
+        if members:
+            return members
+    except Exception as e:
+        print("讀取 Google 試算表（服務帳戶）失敗，改用公開 CSV:", e)
+
+    try:
+        response = requests.get(GSHEET_CSV_URL, timeout=15)
+        if response.status_code == 200:
+            decoded_content = response.content.decode("utf-8")
+            reader = csv.reader(io.StringIO(decoded_content))
+            next(reader, None)
+            for row in reader:
+                display_str = format_member_display(row)
+                if display_str and display_str not in members:
+                    members.append(display_str)
+    except Exception as e:
+        print("讀取 Google 試算表 CSV 失敗:", e)
+
+    if not members:
         members = ["聖騎士-高須鼠兒[高須]", "死靈-Pongdog(胖打)"]
     return members
-
-def init_db():
-    conn = sqlite3.connect("guild_database.db")
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS loot_projects (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            leader_name TEXT,
-            item_name TEXT,
-            loot_date TEXT,
-            members TEXT,
-            total_price REAL,
-            tax_rate REAL,
-            status TEXT DEFAULT 'pending',
-            updated_by TEXT,
-            updated_at TEXT
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS split_records (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            project_id INTEGER,
-            member_name TEXT,
-            item_name TEXT,
-            total_per_person REAL,
-            leader_name TEXT,
-            status INTEGER DEFAULT 0,
-            FOREIGN KEY(project_id) REFERENCES loot_projects(id)
-        )
-    ''')
-    
-    try:
-        cursor.execute("ALTER TABLE loot_projects ADD COLUMN edit_summary TEXT")
-    except sqlite3.OperationalError:
-        pass
-
-    conn.commit()
-    conn.close()
 
 init_db()
 
@@ -510,7 +508,7 @@ def index():
 
     guild_members = fetch_guild_members_from_sheet()
 
-    conn = sqlite3.connect("guild_database.db")
+    conn = get_db_connection()
     cursor = conn.cursor()
 
     cursor.execute("SELECT id, leader_name, item_name, loot_date, members FROM loot_projects WHERE status = 'pending'")
@@ -538,7 +536,7 @@ def edit_project(project_id):
     if not user:
         return redirect(url_for('login'))
 
-    conn = sqlite3.connect("guild_database.db")
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT id, leader_name, item_name, loot_date, members, total_price, tax_rate, status, updated_by, updated_at FROM loot_projects WHERE id = ?", (project_id,))
     proj = cursor.fetchone()
@@ -736,6 +734,9 @@ def callback():
     if not code:
         return redirect(url_for('index'))
 
+    if not CLIENT_SECRET:
+        return "尚未設定 DISCORD_CLIENT_SECRET 環境變數，無法完成 Discord 登入。", 500
+
     data = {
         'client_id': CLIENT_ID,
         'client_secret': CLIENT_SECRET,
@@ -773,7 +774,11 @@ def logout():
 # 路由：建立打寶與分紅登記
 @app.route('/create_loot', methods=['POST'])
 def create_loot():
+    user = session.get('user')
+    if not user:
+        return redirect(url_for('login'))
     leader_name = request.form.get('leader_name')
+    leader_discord_id = int(user.get('id')) if user.get('id') else None
     item_name = request.form.get('item_name') or "未命名物品"
     loot_date = request.form.get('loot_date')
     members_raw = request.form.get('members', '')
@@ -783,15 +788,15 @@ def create_loot():
     members_list = [m.strip() for m in members_raw.replace('，', ',').split(',') if m.strip()]
     member_count = len(members_list)
 
-    conn = sqlite3.connect("guild_database.db")
+    conn = get_db_connection()
     cursor = conn.cursor()
 
     if total_price > 0 and member_count > 0:
         status = 'completed'
         cursor.execute("""
-            INSERT INTO loot_projects (leader_name, item_name, loot_date, members, total_price, tax_rate, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (leader_name, item_name, loot_date, members_raw, total_price, tax_rate, status))
+            INSERT INTO loot_projects (leader_name, leader_discord_id, item_name, loot_date, members, total_price, tax_rate, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (leader_name, leader_discord_id, item_name, loot_date, members_raw, total_price, tax_rate, status))
         project_id = cursor.lastrowid
 
         actual_total = total_price * (1 - tax_rate / 100.0)
@@ -809,9 +814,9 @@ def create_loot():
     else:
         status = 'pending'
         cursor.execute("""
-            INSERT INTO loot_projects (leader_name, item_name, loot_date, members, total_price, tax_rate, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (leader_name, item_name, loot_date, members_raw, total_price, tax_rate, status))
+            INSERT INTO loot_projects (leader_name, leader_discord_id, item_name, loot_date, members, total_price, tax_rate, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (leader_name, leader_discord_id, item_name, loot_date, members_raw, total_price, tax_rate, status))
         
         conn.commit()
         conn.close()
@@ -820,9 +825,11 @@ def create_loot():
 # 路由：待售寶物結算轉入分錢明細
 @app.route('/activate/<int:project_id>', methods=['POST'])
 def activate_project(project_id):
+    if not session.get('user'):
+        return redirect(url_for('login'))
     sold_price = float(request.form.get('sold_price', 0))
 
-    conn = sqlite3.connect("guild_database.db")
+    conn = get_db_connection()
     cursor = conn.cursor()
 
     cursor.execute("SELECT leader_name, item_name, members, tax_rate FROM loot_projects WHERE id = ?", (project_id,))
@@ -859,7 +866,7 @@ def toggle_status(record_id):
     if not user:
         return redirect(url_for('login'))
 
-    conn = sqlite3.connect("guild_database.db")
+    conn = get_db_connection()
     cursor = conn.cursor()
 
     cursor.execute("SELECT member_name FROM split_records WHERE id = ?", (record_id,))

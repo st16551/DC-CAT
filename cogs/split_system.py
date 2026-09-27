@@ -1,62 +1,15 @@
-import io
-import sqlite3
 import discord
 from discord import app_commands
 from discord.ext import commands
-import asyncio
 from datetime import datetime
+from utils.database import get_db_connection
 
 # ===================== 資料庫初始化安全檢查 =====================
-def init_db():
-    try:
-        conn = sqlite3.connect("guild_database.db")
-        cursor = conn.cursor()
-        
-        # 1. 網頁端專用的打寶專案主表
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS loot_projects (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                leader_name TEXT,
-                item_name TEXT,
-                loot_date TEXT,
-                members TEXT,
-                total_price REAL,
-                tax_rate REAL,
-                status TEXT DEFAULT 'pending',
-                updated_by TEXT,
-                updated_at TEXT,
-                edit_summary TEXT
-            )
-        ''')
-        
-        # 2. 串接網頁與機器人的分錢明細表 (具備 project_id 關聯)
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS split_records (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                project_id INTEGER,
-                member_name TEXT,
-                item_name TEXT,
-                total_per_person REAL,
-                leader_name TEXT,
-                status INTEGER DEFAULT 0,
-                message_id INTEGER,
-                channel_id INTEGER,
-                FOREIGN KEY(project_id) REFERENCES loot_projects(id)
-            )
-        """)
-        
-        # 防呆：確保舊表如果缺少 project_id 欄位能自動補上
-        cursor.execute("PRAGMA table_info(split_records);")
-        columns = [col[1] for col in cursor.fetchall()]
-        if "project_id" not in columns:
-            cursor.execute("ALTER TABLE split_records ADD COLUMN project_id INTEGER;")
-
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"❌ 初始化分錢資料庫失敗：{e}")
-
-init_db()
+SPLIT_INSERT_SQL = """
+    INSERT INTO split_records
+    (project_id, member_name, item_name, total_per_person, leader_name, status, message_id, channel_id)
+    VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+"""
 
 # ===================== 分錢系統相關 Modal 與 View =====================
 
@@ -103,25 +56,23 @@ class EditSplitModal(discord.ui.Modal, title="設定/修改戰利品分錢資訊
 
         # 🛠️ 同步更新資料庫：同時更新 loot_projects 與 split_records
         try:
-            conn = sqlite3.connect("guild_database.db")
+            conn = get_db_connection()
             cursor = conn.cursor()
-            
             cursor.execute(
                 """
-                UPDATE loot_projects 
+                UPDATE loot_projects
                 SET item_name = ?, total_price = ?, status = 'active'
                 WHERE id = ?
                 """,
-                (self.item_name.value, price_int, self.view_obj.project_id)
+                (self.item_name.value, price_int, self.view_obj.project_id),
             )
-            
             cursor.execute(
                 """
-                UPDATE split_records 
-                SET item_name = ?, total_per_person = ? 
+                UPDATE split_records
+                SET item_name = ?, total_per_person = ?
                 WHERE project_id = ? AND status = 0
                 """,
-                (self.item_name.value, per_person, self.view_obj.project_id)
+                (self.item_name.value, per_person, self.view_obj.project_id),
             )
             conn.commit()
             conn.close()
@@ -180,27 +131,29 @@ class AddMemberSelectView(discord.ui.View):
         self.parent_view.update_buttons()
 
         try:
-            conn = sqlite3.connect("guild_database.db")
+            conn = get_db_connection()
             cursor = conn.cursor()
-            
             members_str = ", ".join(self.parent_view.members)
             cursor.execute(
                 "UPDATE loot_projects SET members = ? WHERE id = ?",
-                (members_str, self.parent_view.project_id)
+                (members_str, self.parent_view.project_id),
             )
-
             cursor.execute(
                 "DELETE FROM split_records WHERE project_id = ? AND status = 0",
-                (self.parent_view.project_id,)
+                (self.parent_view.project_id,),
             )
             for name in self.parent_view.members:
                 cursor.execute(
-                    """
-                    INSERT INTO split_records 
-                    (project_id, member_name, item_name, total_per_person, leader_name, status, message_id, channel_id) 
-                    VALUES (?, ?, ?, ?, 0, ?, ?)
-                    """,
-                    (self.parent_view.project_id, name, self.parent_view.item_name, self.parent_view.per_person, self.parent_view.leader.display_name, self.parent_view.message_id, self.parent_view.channel_id)
+                    SPLIT_INSERT_SQL,
+                    (
+                        self.parent_view.project_id,
+                        name,
+                        self.parent_view.item_name,
+                        self.parent_view.per_person,
+                        self.parent_view.leader.display_name,
+                        self.parent_view.message_id,
+                        self.parent_view.channel_id,
+                    ),
                 )
             conn.commit()
             conn.close()
@@ -290,24 +243,29 @@ class SplitMoneyView(discord.ui.View):
             self.per_person = self.total // len(self.members)
 
         try:
-            conn = sqlite3.connect("guild_database.db")
+            conn = get_db_connection()
             cursor = conn.cursor()
-            
             members_str = ", ".join(self.members)
-            cursor.execute("UPDATE loot_projects SET members = ? WHERE id = ?", (members_str, self.project_id))
-
+            cursor.execute(
+                "UPDATE loot_projects SET members = ? WHERE id = ?",
+                (members_str, self.project_id),
+            )
             cursor.execute(
                 "DELETE FROM split_records WHERE project_id = ? AND status = 0",
-                (self.project_id,)
+                (self.project_id,),
             )
             for name in self.members:
                 cursor.execute(
-                    """
-                    INSERT INTO split_records 
-                    (project_id, member_name, item_name, total_per_person, leader_name, status, message_id, channel_id) 
-                    VALUES (?, ?, ?, ?, 0, ?, ?)
-                    """,
-                    (self.project_id, name, self.item_name, self.per_person, self.leader.display_name, self.message_id, self.channel_id)
+                    SPLIT_INSERT_SQL,
+                    (
+                        self.project_id,
+                        name,
+                        self.item_name,
+                        self.per_person,
+                        self.leader.display_name,
+                        self.message_id,
+                        self.channel_id,
+                    ),
                 )
             conn.commit()
             conn.close()
@@ -382,15 +340,15 @@ class SplitButton(discord.ui.Button):
 
         new_status = 1 if view.status[self.member_name] else 0
         try:
-            conn = sqlite3.connect("guild_database.db")
+            conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute(
                 """
-                UPDATE split_records 
-                SET status = ? 
+                UPDATE split_records
+                SET status = ?
                 WHERE member_name = ? AND project_id = ?
                 """,
-                (new_status, self.member_name, view.project_id)
+                (new_status, self.member_name, view.project_id),
             )
             conn.commit()
             conn.close()
@@ -400,9 +358,12 @@ class SplitButton(discord.ui.Button):
         all_claimed = all(view.status.values()) if view.status else False
         if all_claimed:
             try:
-                conn = sqlite3.connect("guild_database.db")
+                conn = get_db_connection()
                 cursor = conn.cursor()
-                cursor.execute("UPDATE loot_projects SET status = 'completed' WHERE id = ?", (view.project_id,))
+                cursor.execute(
+                    "UPDATE loot_projects SET status = 'completed' WHERE id = ?",
+                    (view.project_id,),
+                )
                 conn.commit()
                 conn.close()
             except Exception as e:
@@ -447,26 +408,36 @@ class SplitSystem(commands.Cog):
 
         project_id = None
         try:
-            conn = sqlite3.connect("guild_database.db")
+            conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute(
                 """
-                INSERT INTO loot_projects 
-                (leader_name, item_name, loot_date, members, total_price, tax_rate, status) 
-                VALUES (?, ?, ?, ?, 0, 0, 'pending')
+                INSERT INTO loot_projects
+                (leader_name, leader_discord_id, item_name, loot_date, members, total_price, tax_rate, status)
+                VALUES (?, ?, ?, ?, ?, 0, 0, 'pending')
                 """,
-                (interaction.user.display_name, "未命名物品", today_str, members_str)
+                (
+                    interaction.user.display_name,
+                    interaction.user.id,
+                    "未命名物品",
+                    today_str,
+                    members_str,
+                ),
             )
             project_id = cursor.lastrowid
 
             for name in members:
                 cursor.execute(
-                    """
-                    INSERT INTO split_records 
-                    (project_id, member_name, item_name, total_per_person, leader_name, status, message_id, channel_id) 
-                    VALUES (?, ?, ?, ?, ?, 0, ?, ?)
-                    """,
-                    (project_id, name, "未命名物品", 0, interaction.user.display_name, msg.id, target_channel.id)
+                    SPLIT_INSERT_SQL,
+                    (
+                        project_id,
+                        name,
+                        "未命名物品",
+                        0,
+                        interaction.user.display_name,
+                        msg.id,
+                        target_channel.id,
+                    ),
                 )
             conn.commit()
             conn.close()
@@ -520,5 +491,62 @@ class SplitSystem(commands.Cog):
         ]
         return filtered[:25]
 
+class RestoredLeader:
+    def __init__(self, user_id, display_name):
+        self.id = user_id or 0
+        self.display_name = display_name or "未知"
+
+
+async def restore_open_split_views(bot):
+    await bot.wait_until_ready()
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT project_id, member_name, item_name, total_per_person, leader_name,
+               status, message_id, channel_id
+        FROM split_records
+        WHERE project_id IS NOT NULL AND message_id IS NOT NULL
+        """
+    )
+    rows = cursor.fetchall()
+    cursor.execute(
+        "SELECT id, leader_discord_id, total_price, status FROM loot_projects"
+    )
+    projects = {r["id"]: r for r in cursor.fetchall()}
+    conn.close()
+
+    grouped = {}
+    for row in rows:
+        pid = row["project_id"]
+        proj = projects.get(pid)
+        if not proj or proj["status"] == "completed":
+            continue
+        grouped.setdefault(pid, []).append(row)
+
+    for pid, recs in grouped.items():
+        first = recs[0]
+        members = [r["member_name"] for r in recs]
+        claimed = {r["member_name"]: bool(r["status"]) for r in recs}
+        leader_id = projects[pid]["leader_discord_id"]
+        leader = RestoredLeader(leader_id, first["leader_name"])
+        total = int(projects[pid]["total_price"] or 0)
+        per_person = int(first["total_per_person"] or 0)
+        view = SplitMoneyView(
+            item_name=first["item_name"] or "未命名物品",
+            total=total,
+            per_person=per_person,
+            members=members,
+            leader=leader,
+            message_id=first["message_id"],
+            channel_id=first["channel_id"],
+            project_id=pid,
+        )
+        view.status = claimed
+        view.update_buttons()
+        bot.add_view(view, message_id=first["message_id"])
+
+
 async def setup(bot):
     await bot.add_cog(SplitSystem(bot))
+    bot.loop.create_task(restore_open_split_views(bot))

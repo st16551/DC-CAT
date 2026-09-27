@@ -1,18 +1,30 @@
 from datetime import datetime
 import io
-import sqlite3
 import discord
 from discord import app_commands
 from discord.ext import commands
-
-DB_FILE = "guild_database.db"
+from utils import activity_data
+from utils.database import get_db_connection
 
 # 暫存語音進入時間 (discord_id: datetime)
 voice_sessions = {}
 
 
+def _touch_activity(discord_id, *, messages=0, voice_seconds=0, last_active=None):
+    key = str(discord_id)
+    entry = activity_data.setdefault(
+        key, {"message_count": 0, "voice_seconds": 0, "last_active": None}
+    )
+    if messages:
+        entry["message_count"] = int(entry.get("message_count", 0)) + messages
+    if voice_seconds:
+        entry["voice_seconds"] = int(entry.get("voice_seconds", 0)) + voice_seconds
+    if last_active:
+        entry["last_active"] = last_active
+
+
 def init_activity_db():
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute(
         """
@@ -45,7 +57,7 @@ class ActivityCog(commands.Cog):
         discord_id = message.author.id
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        conn = sqlite3.connect(DB_FILE)
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
             "INSERT OR IGNORE INTO users (discord_id) VALUES (?)", (discord_id,)
@@ -60,6 +72,7 @@ class ActivityCog(commands.Cog):
         )
         conn.commit()
         conn.close()
+        _touch_activity(discord_id, messages=1, last_active=now_str)
 
     # 🎙️ 監聽語音狀態：精準計算進入與離開的語音總秒數
     @commands.Cog.listener()
@@ -71,7 +84,7 @@ class ActivityCog(commands.Cog):
         now = datetime.now()
         now_str = now.strftime("%Y-%m-%d %H:%M:%S")
 
-        conn = sqlite3.connect(DB_FILE)
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
             "INSERT OR IGNORE INTO users (discord_id) VALUES (?)", (discord_id,)
@@ -95,6 +108,9 @@ class ActivityCog(commands.Cog):
                     """,
                         (duration, now_str, discord_id),
                     )
+                    _touch_activity(
+                        discord_id, voice_seconds=duration, last_active=now_str
+                    )
         conn.commit()
         conn.close()
 
@@ -103,7 +119,7 @@ class ActivityCog(commands.Cog):
         name="活躍排行", description="查看公會成員的文字與語音活躍排行榜"
     )
     async def show_leaderboard(self, interaction: discord.Interaction):
-        conn = sqlite3.connect(DB_FILE)
+        conn = get_db_connection()
         cursor = conn.cursor()
 
         cursor.execute(
@@ -145,7 +161,7 @@ class ActivityCog(commands.Cog):
     async def export_activity_details(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
 
-        conn = sqlite3.connect(DB_FILE)
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
             """

@@ -8,7 +8,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 import random
-from utils.database import get_db_connection  # 🛡️ 引入統一的絕對路徑連線工具
+from utils.database import get_db_connection
+from utils.level_helper import add_user_xp
 
 class LevelingCog(commands.Cog):
     def __init__(self, bot):
@@ -33,46 +34,25 @@ class LevelingCog(commands.Cog):
             VALUES (?, 1, 0, 0, 0.0, 0, 100)
         """, (user_id,))
 
-        # 2. 累加文字發言數
-        cursor.execute("""
-            UPDATE member_levels 
-            SET messages_count = messages_count + 1 
+        cursor.execute(
+            """
+            UPDATE member_levels
+            SET messages_count = messages_count + 1
             WHERE discord_id = ?
-        """, (user_id,))
-        
-        # 更新最後活躍時間
-        cursor.execute("UPDATE users SET last_active = CURRENT_TIMESTAMP WHERE discord_id = ?", (user_id,))
+            """,
+            (user_id,),
+        )
+        cursor.execute(
+            "UPDATE users SET last_active = CURRENT_TIMESTAMP WHERE discord_id = ?",
+            (user_id,),
+        )
         conn.commit()
+        conn.close()
 
-        # 3. 檢查冷卻時間（避免洗頻洗經驗）
         if user_id in self.cooldowns:
-            conn.close()
             return
 
-        # 4. 處理經驗值與升級
-        cursor.execute("SELECT level, exp, max_exp FROM member_levels WHERE discord_id = ?", (user_id,))
-        row = cursor.fetchone()
-        if row:
-            level, xp, max_exp = row["level"], row["exp"], row["max_exp"]
-            
-            xp_gain = random.randint(10, 20)
-            xp += xp_gain
-            new_level = level
-
-            # 檢查是否達到升級門檻
-            if xp >= max_exp:
-                new_level += 1
-                xp -= max_exp
-                max_exp = int(max_exp * 1.2)  # 每升一級提高升級門檻
-
-            cursor.execute("""
-                UPDATE member_levels 
-                SET level = ?, exp = ?, max_exp = ? 
-                WHERE discord_id = ?
-            """, (new_level, xp, max_exp, user_id))
-            conn.commit()
-
-        conn.close()
+        add_user_xp(str(user_id), user_name, xp_amount=random.randint(10, 20))
 
         # 設定 60 秒冷卻
         self.cooldowns.add(user_id)

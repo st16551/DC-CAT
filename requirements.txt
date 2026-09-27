@@ -1,7 +1,7 @@
 discord.py>=2.3.2
 flask>=3.0.0
-wavelink>=3.0.0
-yt-dlp>=2023.12.30
+requests>=2.31.0
 gspread
 google-auth
+google-auth-oauthlib
 oauth2client

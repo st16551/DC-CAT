@@ -328,17 +328,17 @@ class LeaveCog(commands.Cog):
         # 假設你的使用者資料表叫 users，內含 discord_id, game_name, profession, sub_guild, joined_at 等欄位
         try:
             cursor.execute("""
-                u.discord_id, u.discord_name, u.game_name, u.profession, u.sub_guild, u.joined_at,
-                l.start_date, l.end_date
-                FROM users u
-                LEFT JOIN leaves l ON u.discord_id = l.discord_id AND l.status = '已批准'
+                SELECT gc.discord_id, gc.discord_name, gc.character_name, gc.main_class, gc.branch, u.joined_at,
+                       l.start_date, l.end_date
+                FROM game_characters gc
+                LEFT JOIN users u ON u.discord_id = gc.discord_id
+                LEFT JOIN leaves l ON gc.discord_id = l.discord_id AND l.status = '已批准'
             """)
             rows = cursor.fetchall()
         except Exception:
-            # 如果資料庫結構不同，退回單純抓取 leaves 與對應的使用者資訊
             cursor.execute("""
-                SELECT u.discord_id, l.start_date, l.end_date 
-                FROM users u 
+                SELECT u.discord_id, l.start_date, l.end_date
+                FROM users u
                 LEFT JOIN leaves l ON u.discord_id = l.discord_id
             """)
             rows = cursor.fetchall()

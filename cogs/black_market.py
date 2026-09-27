@@ -378,6 +378,61 @@ class BlackMarketCog(commands.Cog):
   async def before_check_debuffs(self):
     await self.bot.wait_until_ready()
 
+  @commands.Cog.listener()
+  async def on_message(self, message: discord.Message):
+    if message.author.bot or not message.guild:
+      return
+
+    key = f"{message.guild.id}_{message.author.id}"
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT type, expire_at FROM active_debuffs WHERE id = ?",
+        (key,),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+      return
+
+    try:
+      expire_at = datetime.fromisoformat(row["expire_at"])
+    except Exception:
+      return
+    if datetime.now() >= expire_at:
+      return
+
+    original = message.content
+    if not original:
+      return
+
+    debuff_type = row["type"]
+    new_content = original
+    if debuff_type == "reverse":
+      new_content = original[::-1]
+    elif debuff_type == "mosaic":
+      chars = list(original)
+      for i in range(len(chars)):
+        if chars[i].strip() and random.random() < 0.35:
+          chars[i] = "█"
+      new_content = "".join(chars)
+    else:
+      return
+
+    if new_content == original:
+      return
+
+    try:
+      await message.delete()
+    except Exception:
+      return
+    try:
+      await message.channel.send(
+          f"{message.author.mention}：{new_content}"
+      )
+    except Exception:
+      pass
+
   @app_commands.command(
       name="黑市", description="開啟地下黑市，購買整人與詛咒道具"
   )

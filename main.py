@@ -22,8 +22,6 @@ from threading import Thread
 
 
 
-# 🛡️ 引入資料庫初始化，確保啟動時自動建立所有表格（解決 active_debuffs 報錯）
-
 from utils.database import init_db
 
 
@@ -79,8 +77,6 @@ async def on_ready():
     print(f"========================================")
 
 
-
-    # 1. 確保資料庫表格完整建立（自動修復 missing table 錯誤）
 
     try:
 
@@ -154,9 +150,11 @@ async def on_ready():
 
 if __name__ == "__main__":
 
-    keep_alive()  # 啟動完整網頁儀表板心跳
+    init_db()
 
-    TOKEN = os.getenv("DISCORD_TOKEN")  # 從 Render 環境變數讀取 Token
+    keep_alive()
+
+    TOKEN = os.getenv("DISCORD_TOKEN")
 
     if TOKEN:
 

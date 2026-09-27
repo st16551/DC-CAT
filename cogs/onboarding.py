@@ -1,22 +1,19 @@
-import os
-import json
-import sqlite3
+import gspread
 import discord
 from discord import app_commands
 from discord.ext import commands
-import gspread
-from google.oauth2.service_account import Credentials
+from utils.database import get_db_connection, init_db as init_core_db
+from utils.sheets import get_member_sheet
 
-DB_FILE = "guild_database.db"
-MEMBER_ROLE_NAME = "成員"  # 基本身分組名稱
-FORUM_CHANNEL_ID = 1549273328705872002  # 入會申請論壇頻道 ID
-AUDIT_CHANNEL_ID = 1549263078892249108  # 幹部審核專用頻道 ID
+MEMBER_ROLE_NAME = "成員"
+FORUM_CHANNEL_ID = 1549273328705872002
+AUDIT_CHANNEL_ID = 1549263078892249108
 
-# 📝 身分組 ID 對應字典
 ROLE_IDS = {
     "成員": 1527550855631339601,
     "牧師": 1529725865024557196,
     "聖騎": 1529726272471568454,
+    "聖騎士": 1529726272471568454,
     "槍手": 1529726360568987708,
     "死靈": 1529726490734886922,
     "法師": 1529726652341420113,
@@ -25,89 +22,12 @@ ROLE_IDS = {
     "戰士": 1529734718193668127,
     "1會": 1541087729088200765,
     "2会": 1541087803151098079,
+    "2會": 1541087803151098079,
     "3会": 1541087848298446998,
+    "3會": 1541087848298446998,
 }
 
-SPREADSHEET_ID = "12AP1pzhqeskwhYY5piaYGasRNifLdCpgoddjxVM5yg4"
-
-def get_gspread_client():
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive"
-    ]
-    
-    # 支援從環境變數讀取 JSON 金鑰內容（配合您的雲端設定）
-    creds_json_str = os.getenv("GOOGLE_CREDENTIALS") # 請確認您環境變數的 KEY 名稱，若叫 GOOGLE_CREDENTIALS 即可直接讀取
-    if creds_json_str:
-        creds_dict = json.loads(creds_json_str)
-        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    else:
-        # 如果沒有環境變數，則退回原本的檔案讀取方式（本地測試用）
-        creds = Credentials.from_service_account_file("credentials.json", scopes=scopes)
-        
-    client = gspread.authorize(creds)
-    return client
-
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    
-    cursor.execute("PRAGMA table_info(game_characters);")
-    existing_columns = [col[1] for col in cursor.fetchall()]
-    
-    try:
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS game_characters (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                discord_id INTEGER UNIQUE,
-                discord_name TEXT,
-                game_name TEXT,
-                character_name TEXT,
-                main_class TEXT,
-                branch TEXT DEFAULT '未分配'
-            )
-        """
-        )
-    except Exception as e:
-        print(f"資料庫建立提示: {e}")
-
-    cursor.execute("PRAGMA index_list('game_characters');")
-    indexes = cursor.fetchall()
-    has_unique = any(idx[2] == 1 for idx in indexes)
-    
-    if existing_columns and not has_unique:
-        print("偵測到舊資料庫缺少 UNIQUE 約束，正在自動重建表格...")
-        cursor.execute("DROP TABLE game_characters;")
-        cursor.execute(
-            """
-            CREATE TABLE game_characters (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                discord_id INTEGER UNIQUE,
-                discord_name TEXT,
-                game_name TEXT,
-                character_name TEXT,
-                main_class TEXT,
-                branch TEXT DEFAULT '未分配'
-            )
-        """
-        )
-    else:
-        if "discord_name" not in existing_columns and existing_columns:
-            cursor.execute("ALTER TABLE game_characters ADD COLUMN discord_name TEXT;")
-        if "game_name" not in existing_columns and existing_columns:
-            cursor.execute("ALTER TABLE game_characters ADD COLUMN game_name TEXT;")
-        if "character_name" not in existing_columns and existing_columns:
-            cursor.execute("ALTER TABLE game_characters ADD COLUMN character_name TEXT;")
-        if "main_class" not in existing_columns and existing_columns:
-            cursor.execute("ALTER TABLE game_characters ADD COLUMN main_class TEXT;")
-        if "branch" not in existing_columns and existing_columns:
-            cursor.execute("ALTER TABLE game_characters ADD COLUMN branch TEXT DEFAULT '未分配';")
-
-    conn.commit()
-    conn.close()
-
-init_db()
+init_core_db()
 
 
 # --- 1. 遊戲資料填寫表單 (Modal) ---
@@ -161,7 +81,7 @@ class CharacterModal(discord.ui.Modal, title="Escalation - 成員入會申請登
 
         audit_channel = interaction.guild.get_channel(AUDIT_CHANNEL_ID)
         if audit_channel:
-            conn = sqlite3.connect(DB_FILE)
+            conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute("SELECT branch, main_class, COUNT(*) FROM game_characters WHERE branch IN ('1會', '2會', '3會') GROUP BY branch, main_class")
             rows = cursor.fetchall()
@@ -309,7 +229,24 @@ class InterviewAuditView(discord.ui.View):
         applicant = guild.get_member(app_id) if app_id != 0 else None
         target_branch = self.selected_branch
 
-        conn = sqlite3.connect(DB_FILE)
+        if interaction.message and interaction.message.embeds:
+            embed = interaction.message.embeds[0]
+            fields = {f.name: f.value for f in embed.fields}
+            if not self.character_name:
+                self.character_name = fields.get("遊戲 ID", "").replace("`", "").strip()
+            if not self.main_class or self.main_class == "聖騎":
+                filled = fields.get("🛡️ 填寫職業") or fields.get("填寫職業") or ""
+                cleaned = filled.replace("*", "").replace("`", "").strip()
+                if cleaned:
+                    self.main_class = cleaned
+            if not self.nickname:
+                self.nickname = fields.get("希望暱稱", "").strip()
+            if not self.extra_info:
+                self.extra_info = fields.get("詳細資料與問答", "")
+            if not self.discord_name:
+                self.discord_name = fields.get("申請人 (Discord)", "")
+
+        conn = get_db_connection()
         cursor = conn.cursor()
 
         cursor.execute(
@@ -350,8 +287,7 @@ class InterviewAuditView(discord.ui.View):
         conn.close()
 
         try:
-            client = get_gspread_client()
-            sheet = client.open_by_key(SPREADSHEET_ID).sheet1
+            sheet = get_member_sheet()
             current_time = discord.utils.utcnow().strftime("%Y-%m-%d %H:%M:%S")
             sheet.append_row([
                 str(app_id),
@@ -508,8 +444,7 @@ class GuildAdminCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         
         try:
-            client = get_gspread_client()
-            sheet = client.open_by_key(SPREADSHEET_ID).sheet1
+            sheet = get_member_sheet()
             
             rows = sheet.get_all_values()
             if not rows or len(rows) <= 1:
@@ -523,7 +458,7 @@ class GuildAdminCog(commands.Cog):
             
             cell_updates = []
             
-            conn = sqlite3.connect(DB_FILE)
+            conn = get_db_connection()
             cursor = conn.cursor()
             
             for index, row in enumerate(rows[1:], start=2):

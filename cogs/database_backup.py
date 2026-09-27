@@ -7,15 +7,17 @@ import os
 import datetime
 import urllib.request
 import json
+import asyncio
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
+from utils.database import DB_FILE, init_db
 
 class DatabaseBackup(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.backup_channel_id = 1553512571120656596
-        self.db_path = "guild_database.db"
+        self.backup_channel_id = int(os.getenv("BACKUP_CHANNEL_ID", "1553512571120656596"))
+        self.db_path = DB_FILE
         
         # 🚀 啟動時不執行任何雲端存檔或覆蓋動作，保持本地乾淨
         # 如果需要定時備份，可以保留 loop，但它只會在時間到時計時執行，不會在「重開機」時立刻洗版
@@ -78,7 +80,6 @@ class DatabaseBackup(commands.Cog):
         except Exception as e:
             print(f"[備份系統] ❌ 還原過程發生例外錯誤: {e}")
 
-        from utils.database import init_db
         init_db()
         print("[備份系統] 🛠️ 資料庫結構初始化完成。")
 
@@ -161,7 +162,7 @@ class DatabaseBackup(commands.Cog):
             @discord.ui.button(label="確認重置資料庫", style=discord.ButtonStyle.danger)
             async def confirm(self, button_interaction: discord.Interaction, button: discord.ui.Button):
                 import sqlite3
-                conn = sqlite3.connect("guild_database.db")
+                conn = sqlite3.connect(DB_FILE)
                 cursor = conn.cursor()
                 
                 tables = ["users", "game_characters", "leaves", "feedbacks", "checkin_system", "member_levels"]

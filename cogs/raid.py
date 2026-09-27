@@ -1,51 +1,12 @@
 import io
-import sqlite3
 from datetime import datetime, timedelta
 import discord
 from discord import app_commands
 from discord.ext import commands
 import asyncio
 
-# 👇 改用最穩定的方式匯入分錢模組
-try:
-    from split_system import SplitMoneyView
-except ImportError:
-    try:
-        from .split_system import SplitMoneyView
-    except ImportError:
-        SplitMoneyView = None
-
-try:
-    from utils import custom_configs, save_data, CUSTOM_CONFIG_FILE, temp_voice_rooms
-except ImportError:
-    custom_configs = {}
-    CUSTOM_CONFIG_FILE = "config.json"
-    temp_voice_rooms = {}
-    def save_data(file, data):
-        pass
-
-# ===================== 出團資料庫初始化 =====================
-def init_raid_db():
-    try:
-        conn = sqlite3.connect("guild_database.db")
-        cursor = conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS raid_records (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                message_id INTEGER,
-                channel_id INTEGER,
-                role_name TEXT,
-                member_name TEXT,
-                leader_name TEXT,
-                title TEXT
-            )
-        """)
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"❌ 初始化出團資料庫失敗：{e}")
-
-init_raid_db()
+from utils import custom_configs, save_data, CUSTOM_CONFIG_FILE, temp_voice_rooms
+from utils.database import get_db_connection
 
 ROOM_MODES = {
     "雙坦3補爬塔團 (2坦 3補 5DPS 2補位)": {
@@ -252,7 +213,7 @@ class RaidView(discord.ui.View):
         if not self.message_id:
             return
         try:
-            conn = sqlite3.connect("guild_database.db")
+            conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute("DELETE FROM raid_records WHERE message_id = ?", (self.message_id,))
             for r_name, m_list in self.signups.items():
@@ -359,13 +320,10 @@ class RaidView(discord.ui.View):
             await interaction.response.send_message(f"建立語音房失敗：{e}", ephemeral=True)
 
     async def handle_split(self, interaction: discord.Interaction):
-        # 💡 已移除權限限制，現在所有人皆可按此按鈕執行結算分錢
         await interaction.response.defer(ephemeral=True)
 
         try:
-            if SplitMoneyView is None:
-                await interaction.followup.send("❌ 匯入分錢系統模組失敗 (`split_system.py`)：模組未成功載入", ephemeral=True)
-                return
+            from cogs.split_system import SPLIT_INSERT_SQL, SplitMoneyView
 
             unique_names = []
             for m_list in self.signups.values():
@@ -378,48 +336,66 @@ class RaidView(discord.ui.View):
                 return
 
             target_channel = discord.utils.get(interaction.guild.text_channels, name="💰-分錢與戰利品歸檔") or interaction.channel
-            
-            # 先發送訊息以取得 message_id
             temp_embed = discord.Embed(title="💰 戰利品分錢面板", description="載入中...", color=discord.Color.gold())
             sent_message = await target_channel.send(embed=temp_embed)
 
-            view = SplitMoneyView("出團戰利品", 0, 0, unique_names, self.host, message_id=sent_message.id, channel_id=target_channel.id)
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            members_str = ", ".join(unique_names)
+            project_id = None
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO loot_projects
+                (leader_name, leader_discord_id, item_name, loot_date, members, total_price, tax_rate, status)
+                VALUES (?, ?, ?, ?, ?, 0, 0, 'pending')
+                """,
+                (
+                    self.host.display_name,
+                    self.host.id,
+                    "出團戰利品",
+                    today_str,
+                    members_str,
+                ),
+            )
+            project_id = cursor.lastrowid
+            for name in unique_names:
+                cursor.execute(
+                    SPLIT_INSERT_SQL,
+                    (
+                        project_id,
+                        name,
+                        "出團戰利品",
+                        0,
+                        self.host.display_name,
+                        sent_message.id,
+                        target_channel.id,
+                    ),
+                )
+            conn.commit()
+            conn.close()
+
+            view = SplitMoneyView(
+                "出團戰利品",
+                0,
+                0,
+                unique_names,
+                self.host,
+                message_id=sent_message.id,
+                channel_id=target_channel.id,
+                project_id=project_id,
+            )
             embed = discord.Embed(
                 title="💰 戰利品分錢面板",
-                description=f"**物品**：出團戰利品\n**總額**：`0` | **人數**：{len(unique_names)} 人\n**每人分得**：`0`\n\n⚠️ 請點擊下方 **「✏️ 編輯品項/金額」** 按鈕設定正確金額！",
-                color=discord.Color.gold()
+                description=(
+                    f"**物品**：出團戰利品\n**總額**：`0` | **人數**：{len(unique_names)} 人\n"
+                    f"**每人分得**：`0`\n\n⚠️ 請點擊下方 **「✏️ 編輯品項/金額」** 按鈕設定正確金額！"
+                ),
+                color=discord.Color.gold(),
             )
             embed.set_footer(text=f"發起人：{self.host.display_name}")
             await sent_message.edit(embed=embed, view=view)
-
-            # 寫入分錢資料庫
-            try:
-                conn = sqlite3.connect("guild_database.db")
-                cursor = conn.cursor()
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS split_records (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        member_name TEXT,
-                        item_name TEXT,
-                        total_per_person REAL,
-                        leader_name TEXT,
-                        status INTEGER DEFAULT 0,
-                        message_id INTEGER,
-                        channel_id INTEGER
-                    )
-                """)
-                for name in unique_names:
-                    cursor.execute("""
-                        INSERT INTO split_records 
-                        (member_name, item_name, total_per_person, leader_name, status, message_id, channel_id) 
-                        VALUES (?, ?, ?, ?, 0, ?, ?)
-                    """, (name, "出團戰利品", 0, self.host.display_name, sent_message.id, target_channel.id))
-                conn.commit()
-                conn.close()
-            except Exception as db_e:
-                print(f"❌ 寫入分錢資料庫失敗：{db_e}")
-
-            await interaction.followup.send(f"✅ 結算分錢面板已發送至 {target_channel.mention}！", ephemeral=True)
+            await interaction.followup.send(f"✅ 結算分錢面板已發送至 {target_channel.mention}，並已同步至網頁儀表板！", ephemeral=True)
 
         except Exception as e:
             print(f"❌ 結算功能發生未預期錯誤：{e}")
@@ -430,15 +406,18 @@ class RaidView(discord.ui.View):
             await interaction.response.send_message("只有團長或管理員可以關閉出團！", ephemeral=True)
             return
         try:
+            await interaction.response.defer(ephemeral=True)
             if self.message_id:
-                conn = sqlite3.connect("guild_database.db")
+                conn = get_db_connection()
                 cursor = conn.cursor()
                 cursor.execute("DELETE FROM raid_records WHERE message_id = ?", (self.message_id,))
                 conn.commit()
                 conn.close()
             await interaction.message.delete()
+            await interaction.followup.send("已關閉出團面板。", ephemeral=True)
         except Exception:
-            await interaction.response.send_message("關閉出團成功", ephemeral=True)
+            if not interaction.response.is_done():
+                await interaction.response.send_message("關閉出團成功", ephemeral=True)
 
 
 class RaidSystem(commands.Cog):

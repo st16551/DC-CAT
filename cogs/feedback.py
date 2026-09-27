@@ -70,9 +70,9 @@ class FeedbackModal(discord.ui.Modal, title="📬 填寫公會意見回饋"):
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO feedbacks (feedback_id, author_id, author_name, content, status, created_at)
-            VALUES (?, ?, ?, ?, '審核中', ?)
-        """, (feedback_id, author.id, author.display_name, content, created_at))
+            INSERT INTO feedbacks (feedback_id, discord_id, author_id, author_name, content, status, created_at)
+            VALUES (?, ?, ?, ?, ?, '審核中', ?)
+        """, (feedback_id, author.id, author.id, author.display_name, content, created_at))
         conn.commit()
         conn.close()
 

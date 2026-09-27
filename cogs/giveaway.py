@@ -34,7 +34,8 @@ class GiveawayView(discord.ui.View):
             )
         """)
         
-        cursor.execute("SELECT participants, ended FROM giveaways WHERE message_id = ?", (self.message_id,))
+        message_id = interaction.message.id if interaction.message else self.message_id
+        cursor.execute("SELECT participants, ended FROM giveaways WHERE message_id = ?", (message_id,))
         row = cursor.fetchone()
         
         if not row:
@@ -56,7 +57,7 @@ class GiveawayView(discord.ui.View):
         else:
             participants.add(interaction.user.id)
             new_participants_str = ",".join(map(str, participants))
-            cursor.execute("UPDATE giveaways SET participants = ? WHERE message_id = ?", (new_participants_str, self.message_id))
+            cursor.execute("UPDATE giveaways SET participants = ? WHERE message_id = ?", (new_participants_str, message_id))
             conn.commit()
             conn.close()
             
