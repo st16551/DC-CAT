@@ -165,9 +165,9 @@ class InactiveCheckerCog(commands.Cog):
             ephemeral=True,
         )
         try:
-            synced = sync_all_members_to_sheet(guild, days=days)
+            result = sync_all_members_to_sheet(guild, days=days)
             await interaction.followup.send(
-                f"📑 已同步試算表：成員 `{synced}` 筆，並已連動請假／活躍／未活躍分頁（請假中不會列入未活躍）。",
+                f"📑 已同步試算表：成員名單 `{result.get('members', 0)}` 人、好朋友 `{result.get('friends', 0)}` 人。",
                 ephemeral=True,
             )
         except Exception as e:
@@ -177,16 +177,19 @@ class InactiveCheckerCog(commands.Cog):
             )
 
     @app_commands.command(
-        name="同步試算表狀態",
-        description="【管理員】同步成員名單，並把請假／活躍／未活躍寫到對應分頁",
+        name="同步試算表",
+        description="【管理員】依身分組同步：成員+分會→成員名單，其餘有成員身分組→好朋友",
     )
     @app_commands.checks.has_permissions(administrator=True)
     async def sync_sheet_status(self, interaction: discord.Interaction, days: int = 14):
         await interaction.response.defer(ephemeral=True)
         try:
-            count = sync_all_members_to_sheet(interaction.guild, days=days)
+            result = sync_all_members_to_sheet(interaction.guild, days=days)
             await interaction.followup.send(
-                f"✅ 已把 `{count}` 位成員寫入「成員名單」，並連動「請假／活躍／未活躍」分頁。\n請假中的成員不會出現在未活躍分頁。",
+                f"✅ 同步完成。\n"
+                f"• 成員名單（有「成員」+分會身分組）：`{result.get('members', 0)}` 人\n"
+                f"• 好朋友（有「成員」但沒有分會）：`{result.get('friends', 0)}` 人\n"
+                f"• 已連動請假／活躍／未活躍分頁（僅正式成員）。",
                 ephemeral=True,
             )
         except Exception as e:

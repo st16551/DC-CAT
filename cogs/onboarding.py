@@ -1,14 +1,8 @@
-import gspread
 import discord
 from discord import app_commands
 from discord.ext import commands
 from utils.database import get_db_connection, init_db as init_core_db
-from utils.sheets import (
-    get_member_sheet,
-    parse_member_row,
-    sync_all_members_to_sheet,
-    sync_member_by_discord_id,
-)
+from utils.sheets import sync_member_by_discord_id
 
 MEMBER_ROLE_NAME = "成員"
 FORUM_CHANNEL_ID = 1549273328705872002
@@ -441,96 +435,6 @@ class GuildAdminCog(commands.Cog):
         embed.set_footer(text="👇 請詳細閱讀上方規則後，點擊下方按鈕打勾同意並填寫入會資料！")
 
         await interaction.channel.send(embed=embed, view=RulesAcceptanceView())
-
-    @app_commands.command(
-        name="同步試算表id",
-        description="【管理員】從 Google 試算表同步資料：自動補齊 A 欄 ID，並同步所有成員資料至本地資料庫",
-    )
-    @app_commands.checks.has_permissions(administrator=True)
-    async def sync_spreadsheet_ids(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        
-        try:
-            sheet = get_member_sheet()
-            
-            rows = sheet.get_all_values()
-            if not rows or len(rows) <= 1:
-                await interaction.followup.send("❌ 試算表目前沒有足夠的資料！", ephemeral=True)
-                return
-            
-            guild = interaction.guild
-            updated_id_count = 0
-            db_sync_count = 0
-            not_found_list = []
-            
-            cell_updates = []
-            
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            
-            headers = rows[0]
-            for index, row in enumerate(rows[1:], start=2):
-                parsed = parse_member_row(row, headers)
-                discord_id_cell = (parsed.get("discord_id") or "").strip()
-                discord_name_cell = (parsed.get("discord_name") or "").strip()
-                char_name_val = (parsed.get("character_name") or "").strip()
-                class_val = (parsed.get("main_class") or "").strip()
-                branch_val = (parsed.get("branch") or "").strip() or "未分配"
-                game_name_val = "靈谷"
-                
-                target_discord_id = None
-                
-                if not discord_id_cell and discord_name_cell:
-                    member = discord.utils.get(guild.members, name=discord_name_cell)
-                    if not member:
-                        member = discord.utils.get(guild.members, display_name=discord_name_cell)
-                    
-                    if member:
-                        target_discord_id = member.id
-                        cell_updates.append(gspread.Cell(row=index, col=1, value=str(target_discord_id)))
-                        updated_id_count += 1
-                    else:
-                        not_found_list.append(discord_name_cell)
-                elif discord_id_cell.isdigit():
-                    target_discord_id = int(discord_id_cell)
-                
-                if target_discord_id and char_name_val:
-                    cursor.execute("""
-                        INSERT INTO game_characters (discord_id, discord_name, game_name, character_name, main_class, branch)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(discord_id) DO UPDATE SET
-                            discord_name = excluded.discord_name,
-                            game_name = excluded.game_name,
-                            character_name = excluded.character_name,
-                            main_class = excluded.main_class,
-                            branch = excluded.branch
-                    """, (target_discord_id, discord_name_cell, game_name_val, char_name_val, class_val, branch_val))
-                    db_sync_count += 1
-
-            if cell_updates:
-                sheet.update_cells(cell_updates)
-
-            conn.commit()
-            conn.close()
-
-            status_count = 0
-            try:
-                status_count = sync_all_members_to_sheet(guild)
-            except Exception as sheet_e:
-                print(f"回寫請假/活躍欄位失敗: {sheet_e}")
-            
-            msg = f"✅ **同步完成！**\n"
-            msg += f"• 自動補齊試算表 A 欄 ID：`{updated_id_count}` 筆\n"
-            msg += f"• 同步更新至本地資料庫：`{db_sync_count}` 筆資料\n"
-            msg += f"• 回寫成員名單，並連動請假／活躍／未活躍分頁：`{status_count}` 筆\n"
-            
-            if not_found_list:
-                msg += f"\n⚠️ 以下帳號在伺服器中找不到對應成員：\n`{', '.join(not_found_list)}`"
-            
-            await interaction.followup.send(msg, ephemeral=True)
-            
-        except Exception as e:
-            await interaction.followup.send(f"❌ 同步過程發生錯誤：`{e}`", ephemeral=True)
 
 
 async def setup(bot):
