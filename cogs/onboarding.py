@@ -2,29 +2,17 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from utils.database import get_db_connection, init_db as init_core_db
+from utils.roles import (
+    fetch_guild_member,
+    grant_onboarding_roles,
+    normalize_branch_label,
+)
 from utils.sheets import sync_member_by_discord_id
 
 MEMBER_ROLE_NAME = "成員"
 FORUM_CHANNEL_ID = 1549273328705872002
 AUDIT_CHANNEL_ID = 1549263078892249108
-
-ROLE_IDS = {
-    "成員": 1527550855631339601,
-    "牧師": 1529725865024557196,
-    "聖騎": 1529726272471568454,
-    "聖騎士": 1529726272471568454,
-    "槍手": 1529726360568987708,
-    "死靈": 1529726490734886922,
-    "法師": 1529726652341420113,
-    "忍者": 1529726861570216083,
-    "編織": 1529727042516422798,
-    "戰士": 1529734718193668127,
-    "1會": 1541087729088200765,
-    "2会": 1541087803151098079,
-    "2會": 1541087803151098079,
-    "3会": 1541087848298446998,
-    "3會": 1541087848298446998,
-}
+ASSIGNED_BRANCH_FIELD = "幹部指定分會"
 
 init_core_db()
 
@@ -119,6 +107,11 @@ class CharacterModal(discord.ui.Modal, title="Escalation - 成員入會申請登
                 name="希望暱稱", value=self.nickname.value, inline=True
             )
             audit_embed.add_field(
+                name=ASSIGNED_BRANCH_FIELD,
+                value="1會",
+                inline=True,
+            )
+            audit_embed.add_field(
                 name="詳細資料與問答",
                 value=self.experience.value,
                 inline=False,
@@ -205,8 +198,34 @@ class InterviewAuditView(discord.ui.View):
         custom_id="audit_branch_select"
     )
     async def branch_select_callback(self, interaction: discord.Interaction, select: discord.ui.Select):
-        self.selected_branch = select.values[0]
-        await interaction.response.send_message(f"📌 已將目標分會暫定為：**{self.selected_branch}**，請點擊下方按鈕確認通過。", ephemeral=True)
+        self.selected_branch = normalize_branch_label(select.values[0])
+        embed = None
+        if interaction.message and interaction.message.embeds:
+            embed = interaction.message.embeds[0].copy()
+            found = False
+            for i, field in enumerate(embed.fields):
+                if field.name == ASSIGNED_BRANCH_FIELD:
+                    embed.set_field_at(
+                        i,
+                        name=ASSIGNED_BRANCH_FIELD,
+                        value=self.selected_branch,
+                        inline=True,
+                    )
+                    found = True
+                    break
+            if not found:
+                embed.add_field(
+                    name=ASSIGNED_BRANCH_FIELD,
+                    value=self.selected_branch,
+                    inline=True,
+                )
+        if embed:
+            await interaction.response.edit_message(embed=embed)
+        else:
+            await interaction.response.send_message(
+                f"📌 已將目標分會暫定為：**{self.selected_branch}**，請點擊下方按鈕確認通過。",
+                ephemeral=True,
+            )
 
     @discord.ui.button(
         label="✅ 通過審核並發放身分組",
@@ -225,8 +244,8 @@ class InterviewAuditView(discord.ui.View):
                 except Exception:
                     pass
 
-        applicant = guild.get_member(app_id) if app_id != 0 else None
-        target_branch = self.selected_branch
+        applicant = await fetch_guild_member(guild, app_id) if app_id else None
+        target_branch = normalize_branch_label(self.selected_branch or "1會")
 
         if interaction.message and interaction.message.embeds:
             embed = interaction.message.embeds[0]
@@ -244,6 +263,9 @@ class InterviewAuditView(discord.ui.View):
                 self.extra_info = fields.get("詳細資料與問答", "")
             if not self.discord_name:
                 self.discord_name = fields.get("申請人 (Discord)", "")
+            assigned = (fields.get(ASSIGNED_BRANCH_FIELD) or "").strip()
+            if assigned:
+                target_branch = normalize_branch_label(assigned)
 
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -285,6 +307,24 @@ class InterviewAuditView(discord.ui.View):
         conn.commit()
         conn.close()
 
+        role_note = "找不到申請人，無法發放身分組"
+        if applicant:
+            granted, missing, removed, role_error = await grant_onboarding_roles(
+                applicant, self.main_class, target_branch
+            )
+            parts = []
+            if granted:
+                parts.append("已發放：" + "、".join(granted))
+            if removed:
+                parts.append("已移除：" + "、".join(removed))
+            if missing:
+                parts.append("找不到身分組：" + "、".join(missing))
+            if role_error:
+                parts.append(f"失敗：{role_error}")
+            role_note = "；".join(parts) if parts else "沒有變更身分組"
+            print(f"入會發放身分組：{role_note}")
+            applicant = await fetch_guild_member(guild, app_id) or applicant
+
         try:
             current_time = discord.utils.utcnow().strftime("%Y-%m-%d %H:%M:%S")
             sync_member_by_discord_id(
@@ -297,35 +337,10 @@ class InterviewAuditView(discord.ui.View):
                     "branch": target_branch,
                     "joined_at": current_time,
                 },
+                force=True,
             )
         except Exception as e:
             print(f"❌ 寫入 Google 試算表失敗：{e}")
-
-        if applicant:
-            roles_to_add = []
-            member_role_id = ROLE_IDS.get("成員")
-            if member_role_id:
-                member_role = guild.get_role(member_role_id)
-                if member_role:
-                    roles_to_add.append(member_role)
-                
-            class_role_id = ROLE_IDS.get(self.main_class)
-            if class_role_id:
-                class_role = guild.get_role(class_role_id)
-                if class_role:
-                    roles_to_add.append(class_role)
-                
-            branch_role_id = ROLE_IDS.get(target_branch)
-            if branch_role_id:
-                branch_role = guild.get_role(branch_role_id)
-                if branch_role:
-                    roles_to_add.append(branch_role)
-
-            try:
-                if roles_to_add:
-                    await applicant.add_roles(*roles_to_add)
-            except Exception as e:
-                print(f"❌ 發放身分組失敗：{e}")
 
         forum_channel = guild.get_channel(FORUM_CHANNEL_ID)
         if forum_channel and isinstance(forum_channel, discord.ForumChannel):
@@ -349,7 +364,7 @@ class InterviewAuditView(discord.ui.View):
                 f"✅ 已由 {interaction.user.mention} 審核**通過**！\n•"
                 f" 玩家填寫職業：`{self.main_class}`\n•"
                 f" 幹部指定分會：**{target_branch}**\n•"
-                f" 🎯 **已自動發放 成員、職業、分會身分組！**\n•"
+                f" 🎯 **身分組：** {role_note}\n•"
                 f" 📁 **已同步寫入 Google 試算表！**"
             ),
             view=None,

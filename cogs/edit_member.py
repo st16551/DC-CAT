@@ -2,6 +2,12 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from utils.database import get_db_connection
+from utils.roles import (
+    fetch_guild_member,
+    find_friend_role,
+    normalize_branch_label,
+    resolve_guild_role,
+)
 from utils.sheets import (
     apply_display_name_profile,
     branch_from_member_roles,
@@ -11,23 +17,6 @@ from utils.sheets import (
     resolve_branch,
     sync_member_by_discord_id,
 )
-
-ROLE_IDS = {
-    "牧師": 1529725865024557196,
-    "聖騎": 1529726272471568454,
-    "聖騎士": 1529726272471568454,
-    "槍手": 1529726360568987708,
-    "死靈": 1529726490734886922,
-    "法師": 1529726652341420113,
-    "忍者": 1529726861570216083,
-    "編織": 1529727042516422798,
-    "戰士": 1529734718193668127,
-    "1會": 1541087729088200765,
-    "2会": 1541087803151098079,
-    "2會": 1541087803151098079,
-    "3会": 1541087848298446998,
-    "3會": 1541087848298446998,
-}
 
 
 def _row_value(row, index, key=None):
@@ -136,11 +125,7 @@ class EditMemberByDiscordModal(discord.ui.Modal, title="🛠️ 修改成員資�
     async def on_submit(self, interaction: discord.Interaction):
         new_char_name = self.new_char_name_input.value.strip()
         new_class = normalize_class_name(self.class_input.value.strip())
-        new_branch = self.branch_input.value.strip()
-        if new_branch == "2会":
-            new_branch = "2會"
-        if new_branch == "3会":
-            new_branch = "3會"
+        new_branch = normalize_branch_label(self.branch_input.value.strip())
 
         if new_branch not in ["1會", "2會", "3會"]:
             await interaction.response.send_message("❌ 分會名稱必須是 `1會`、`2會` 或 `3會`！", ephemeral=True)
@@ -149,11 +134,7 @@ class EditMemberByDiscordModal(discord.ui.Modal, title="🛠️ 修改成員資�
         old_char_name = self.db_data[3] if self.db_data else "未知"
         old_class = self.db_data[4] if self.db_data else ""
         old_branch = self.db_data[5] if self.db_data else ""
-        member = (
-            interaction.guild.get_member(self.target_discord_id)
-            if interaction.guild
-            else None
-        )
+        member = await fetch_guild_member(interaction.guild, self.target_discord_id)
         discord_name = (
             discord_member_display_name(member)
             or (self.db_data[1] if self.db_data else "")
@@ -212,26 +193,26 @@ class EditMemberByDiscordModal(discord.ui.Modal, title="🛠️ 修改成員資�
 
         if member:
             if old_class != new_class:
-                if old_class and old_class in ROLE_IDS:
-                    old_r = guild.get_role(ROLE_IDS[old_class])
-                    if old_r and old_r in member.roles:
-                        await member.remove_roles(old_r)
-                if new_class in ROLE_IDS:
-                    new_r = guild.get_role(ROLE_IDS[new_class])
-                    if new_r:
-                        await member.add_roles(new_r)
-                        role_changes_msg.append(f"職業: {new_class}")
+                old_r = resolve_guild_role(guild, old_class)
+                if old_r and old_r in member.roles:
+                    await member.remove_roles(old_r)
+                new_r = resolve_guild_role(guild, new_class)
+                if new_r:
+                    await member.add_roles(new_r)
+                    role_changes_msg.append(f"職業: {new_class}")
 
             if old_branch != new_branch:
-                if old_branch and old_branch in ROLE_IDS:
-                    old_br = guild.get_role(ROLE_IDS[old_branch])
-                    if old_br and old_br in member.roles:
-                        await member.remove_roles(old_br)
-                if new_branch in ROLE_IDS:
-                    new_br = guild.get_role(ROLE_IDS[new_branch])
-                    if new_br:
-                        await member.add_roles(new_br)
-                        role_changes_msg.append(f"分會: {new_branch}")
+                old_br = resolve_guild_role(guild, old_branch)
+                if old_br and old_br in member.roles:
+                    await member.remove_roles(old_br)
+                new_br = resolve_guild_role(guild, new_branch)
+                if new_br:
+                    await member.add_roles(new_br)
+                    role_changes_msg.append(f"分會: {new_branch}")
+                friend_role = find_friend_role(guild)
+                if friend_role and friend_role in member.roles and new_br:
+                    await member.remove_roles(friend_role)
+                    role_changes_msg.append("移除好朋友")
 
         sheet_line = "成功" if sheet_updated else f"失敗{('：' + sheet_error) if sheet_error else ''}"
         await interaction.response.send_message(
