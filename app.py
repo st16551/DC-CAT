@@ -81,6 +81,67 @@ def fetch_guild_members_from_sheet():
 
 init_db()
 
+
+class SplitRowView:
+    """讓模板可用 row[0] 也能讀 row.can_toggle。"""
+
+    def __init__(self, row, can_toggle=False):
+        self._row = tuple(row)
+        self.can_toggle = can_toggle
+
+    def __getitem__(self, index):
+        return self._row[index]
+
+
+def _user_match_tokens(user, cursor=None):
+    tokens = []
+    if not user:
+        return tokens
+    for key in ("username", "global_name"):
+        value = (user.get(key) or "").strip().lower()
+        if value:
+            tokens.append(value)
+    uid = user.get("id")
+    if uid and cursor is not None:
+        try:
+            cursor.execute(
+                """
+                SELECT discord_name, character_name
+                FROM game_characters WHERE discord_id = ?
+                """,
+                (int(uid),),
+            )
+            row = cursor.fetchone()
+            if row:
+                for value in (row["discord_name"], row["character_name"]):
+                    cleaned = (value or "").strip().lower()
+                    if cleaned:
+                        tokens.append(cleaned)
+        except Exception:
+            pass
+    return tokens
+
+
+def member_matches_user(member_name, tokens):
+    haystack = (member_name or "").strip().lower()
+    if not haystack or not tokens:
+        return False
+    return any(token == haystack or token in haystack for token in tokens)
+
+
+def _hidden_record_ids(cursor, discord_user_id):
+    if not discord_user_id:
+        return set()
+    try:
+        cursor.execute(
+            "SELECT record_id FROM personal_history_hidden WHERE discord_user_id = ?",
+            (str(discord_user_id),),
+        )
+        return {row[0] for row in cursor.fetchall()}
+    except sqlite3.OperationalError:
+        return set()
+
+
 # 儀表板 HTML 模板
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -198,6 +259,10 @@ HTML_TEMPLATE = """
         .btn-secondary { background: #334155; box-shadow: none; }
         .btn-secondary:hover { background: #475569; }
         .btn-discord { background: #5865F2; box-shadow: 0 4px 12px rgba(88, 101, 242, 0.3); width: 100%; }
+        .btn-danger { background: linear-gradient(135deg, #dc2626, #b91c1c); box-shadow: 0 4px 12px rgba(220, 38, 38, 0.25); }
+        .scope-toggle { display: flex; gap: 8px; align-items: center; }
+        .scope-toggle a { padding: 8px 14px; font-size: 13px; box-shadow: none; }
+        .muted-note { color: var(--text-muted); font-size: 13px; margin: 0 0 16px; }
         
         table { width: 100%; border-collapse: collapse; margin-top: 5px; }
         th, td { padding: 14px 16px; border-bottom: 1px solid var(--border-color); text-align: left; font-size: 14px; }
@@ -215,7 +280,8 @@ HTML_TEMPLATE = """
         <div>
             <div class="brand"><span>🛡️</span> Esca專用系統</div>
             <div class="nav-menu">
-                <a href="/?tab=dashboard" class="nav-item {% if tab == 'dashboard' %}active{% endif %}"><span>📊</span> 分錢明細總覽</a>
+                <a href="/?tab=dashboard&scope={{ scope }}" class="nav-item {% if tab == 'dashboard' %}active{% endif %}"><span>📊</span> 分錢明細總覽</a>
+                <a href="/?tab=history" class="nav-item {% if tab == 'history' %}active{% endif %}"><span>📁</span> 個人歷史紀錄</a>
                 <a href="/?tab=create" class="nav-item {% if tab == 'create' %}active{% endif %}"><span>➕</span> 登記打寶項目</a>
                 <a href="/?tab=pending" class="nav-item {% if tab == 'pending' %}active{% endif %}"><span>⏳</span> 待售寶物庫</a>
                 <a href="/?tab=logs" class="nav-item {% if tab == 'logs' %}active{% endif %}"><span>📜</span> 修改紀錄</a>
@@ -238,19 +304,35 @@ HTML_TEMPLATE = """
                 {% if tab == 'create' %}登記打寶項目
                 {% elif tab == 'pending' %}待售寶物庫管理
                 {% elif tab == 'logs' %}系統編輯修改紀錄
+                {% elif tab == 'history' %}個人歷史交易存檔
                 {% else %}分錢與領取狀態總覽{% endif %}
             </h1>
+            {% if tab == 'dashboard' %}
+            <div class="scope-toggle">
+                {% if user %}
+                    <a href="/?tab=dashboard&scope=all" class="btn {% if scope != 'mine' %}btn-discord{% else %}btn-secondary{% endif %}" style="width:auto;">顯示全部</a>
+                    <a href="/?tab=dashboard&scope=mine" class="btn {% if scope == 'mine' %}btn-discord{% else %}btn-secondary{% endif %}" style="width:auto;">只看我的紀錄</a>
+                {% else %}
+                    <a href="/login" class="btn btn-discord" style="width:auto; padding: 8px 14px; font-size: 13px;">登入後可只看自己的紀錄</a>
+                {% endif %}
+            </div>
+            {% endif %}
         </div>
 
         {% if tab == 'dashboard' %}
         <div class="stats-grid">
-            <div class="stat-card"><span class="stat-label">總分發紀錄筆數</span><span class="stat-value">{{ records|length }} 筆</span></div>
+            <div class="stat-card"><span class="stat-label">{% if scope == 'mine' %}我的進行中筆數{% else %}總分發紀錄筆數{% endif %}</span><span class="stat-value">{{ records|length }} 筆</span></div>
             <div class="stat-card"><span class="stat-label">待售寶物數量</span><span class="stat-value" style="color: var(--accent-blue);">{{ pending_count }} 件</span></div>
             <div class="stat-card"><span class="stat-label">試算表成員連線</span><span class="stat-value" style="color: var(--accent-green);">已同步 (Live)</span></div>
         </div>
 
         <div class="card">
-            <h3>💰 現有分錢總覽明細</h3>
+            <h3>
+                <span>{% if scope == 'mine' %}👤 我的分錢明細（進行中）{% else %}💰 現有分錢總覽明細{% endif %}</span>
+            </h3>
+            {% if scope == 'mine' %}
+            <p class="muted-note">此處只顯示尚未全部結清的個人紀錄。已領取且該筆相關交易結束後，會自動進到左側「個人歷史紀錄」。</p>
+            {% endif %}
             <table>
                 <tr>
                     <th>編號</th>
@@ -277,8 +359,9 @@ HTML_TEMPLATE = """
                     </td>
                     <td>
                         {% if user %}
-                            {% if is_admin or user.username == row[1] or user.global_name == row[1] %}
+                            {% if is_admin or row.can_toggle %}
                                 <form action="/toggle/{{ row[0] }}" method="POST" style="margin:0; display:inline;">
+                                    <input type="hidden" name="scope" value="{{ scope }}">
                                     {% if row[5] == 1 %}
                                         <button type="submit" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;">改為未領</button>
                                     {% else %}
@@ -294,9 +377,54 @@ HTML_TEMPLATE = """
                     </td>
                 </tr>
                 {% else %}
-                <tr><td colspan="7" style="text-align:center; color:var(--text-muted); padding: 40px;">目前沒有任何分錢明細記錄。</td></tr>
+                <tr><td colspan="7" style="text-align:center; color:var(--text-muted); padding: 40px;">{% if scope == 'mine' %}目前沒有進行中的個人分錢紀錄。{% else %}目前沒有任何分錢明細記錄。{% endif %}</td></tr>
                 {% endfor %}
             </table>
+        </div>
+
+        {% elif tab == 'history' %}
+        <div class="card">
+            <h3>📁 個人歷史交易存檔</h3>
+            {% if not user %}
+            <p class="muted-note">請先 Discord 登入後，才能查看與刪除屬於你的歷史分錢紀錄。</p>
+            <a href="/login" class="btn btn-discord" style="width:auto;">🔐 Discord 登入</a>
+            {% else %}
+            <p class="muted-note">當你相關的分錢都已領取（或該筆專案已結算完畢）時，系統會自動把紀錄移到這裡。刪除只會從你的個人存檔移除，不會改動公會總帳。</p>
+            <table>
+                <tr>
+                    <th>編號</th>
+                    <th>成員名稱</th>
+                    <th>品項名稱</th>
+                    <th>每人實拿金額</th>
+                    <th>負責人</th>
+                    <th>狀態</th>
+                    <th>操作</th>
+                </tr>
+                {% for row in history_records %}
+                <tr>
+                    <td>#{{ row[0] }}</td>
+                    <td><b>{{ row[1] }}</b></td>
+                    <td>{{ row[2] }}</td>
+                    <td><span style="color: var(--accent-gold); font-weight: 600;">{{ "{:,}".format(row[3]|int) }}</span> 元</td>
+                    <td>{{ row[4] }}</td>
+                    <td>
+                        {% if row[5] == 1 %}
+                            <span class="status-badge status-paid">已領取 / 已結算</span>
+                        {% else %}
+                            <span class="status-badge status-paid">專案已結算</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <form action="/history/delete/{{ row[0] }}" method="POST" style="margin:0;" onsubmit="return confirm('確定從個人歷史紀錄刪除這筆？公會總帳不會被刪除。');">
+                            <button type="submit" class="btn btn-danger" style="padding: 6px 12px; font-size: 12px;">刪除</button>
+                        </form>
+                    </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="7" style="text-align:center; color:var(--text-muted); padding: 40px;">目前沒有個人歷史紀錄。完成領取後會自動出現在這裡。</td></tr>
+                {% endfor %}
+            </table>
+            {% endif %}
         </div>
 
         {% elif tab == 'create' %}
@@ -502,8 +630,13 @@ HTML_TEMPLATE = """
 @app.route('/')
 def index():
     user = session.get('user')
-    is_admin = user and user.get('id') in ADMIN_DISCORD_IDS 
+    is_admin = user and user.get('id') in ADMIN_DISCORD_IDS
     tab = request.args.get('tab', 'dashboard')
+    scope = request.args.get('scope', 'all')
+    if scope not in ('all', 'mine'):
+        scope = 'all'
+    if not user:
+        scope = 'all'
     today = datetime.now().strftime('%Y-%m-%d')
 
     guild_members = fetch_guild_members_from_sheet()
@@ -515,8 +648,47 @@ def index():
     pending_projects = cursor.fetchall()
     pending_count = len(pending_projects)
 
-    cursor.execute("SELECT id, member_name, item_name, total_per_person, leader_name, status FROM split_records ORDER BY id DESC")
-    records = cursor.fetchall()
+    cursor.execute(
+        """
+        SELECT sr.id, sr.member_name, sr.item_name, sr.total_per_person, sr.leader_name, sr.status,
+               sr.project_id, lp.status AS project_status
+        FROM split_records sr
+        LEFT JOIN loot_projects lp ON lp.id = sr.project_id
+        ORDER BY sr.id DESC
+        """
+    )
+    raw_records = cursor.fetchall()
+
+    tokens = _user_match_tokens(user, cursor)
+    hidden_ids = _hidden_record_ids(cursor, user.get('id') if user else None)
+
+    mine_by_project = {}
+    for row in raw_records:
+        if user and member_matches_user(row[1], tokens):
+            mine_by_project.setdefault(row[6], []).append(row)
+
+    finished_projects = set()
+    for project_id, rows in mine_by_project.items():
+        all_claimed = all((r[5] or 0) == 1 for r in rows)
+        project_completed = any((r[7] or '') == 'completed' for r in rows)
+        if all_claimed or (project_completed and all_claimed):
+            finished_projects.add(project_id)
+
+    dashboard_all = []
+    dashboard_mine_active = []
+    history_records = []
+    for row in raw_records:
+        is_mine = bool(user) and member_matches_user(row[1], tokens)
+        view = SplitRowView(row, can_toggle=is_mine or bool(is_admin))
+        in_history = is_mine and row[6] in finished_projects
+        dashboard_all.append(view)
+        if in_history:
+            if row[0] not in hidden_ids:
+                history_records.append(view)
+        elif is_mine:
+            dashboard_mine_active.append(view)
+
+    records = dashboard_mine_active if (scope == 'mine' and user) else dashboard_all
 
     try:
         cursor.execute("SELECT id, leader_name, item_name, loot_date, members, total_price, tax_rate, status, updated_by, updated_at, edit_summary FROM loot_projects WHERE updated_by IS NOT NULL ORDER BY updated_at DESC")
@@ -528,7 +700,20 @@ def index():
 
     members_json = json.dumps(guild_members, ensure_ascii=False)
 
-    return render_template_string(HTML_TEMPLATE, user=user, is_admin=is_admin, tab=tab, today=today, pending_projects=pending_projects, pending_count=pending_count, records=records, edit_logs=edit_logs, members_json=members_json)
+    return render_template_string(
+        HTML_TEMPLATE,
+        user=user,
+        is_admin=is_admin,
+        tab=tab,
+        scope=scope,
+        today=today,
+        pending_projects=pending_projects,
+        pending_count=pending_count,
+        records=records,
+        history_records=history_records,
+        edit_logs=edit_logs,
+        members_json=members_json,
+    )
 
 @app.route('/edit/<int:project_id>', methods=['GET', 'POST'])
 def edit_project(project_id):
@@ -877,7 +1062,8 @@ def toggle_status(record_id):
 
     member_name = row[0]
     is_admin = user.get('id') in ADMIN_DISCORD_IDS
-    is_self = (user.get('username') == member_name or user.get('global_name') == member_name)
+    tokens = _user_match_tokens(user, cursor)
+    is_self = member_matches_user(member_name, tokens)
 
     if not is_admin and not is_self:
         conn.close()
@@ -891,7 +1077,41 @@ def toggle_status(record_id):
     conn.commit()
     conn.close()
 
-    return redirect(url_for('index', tab='dashboard'))
+    scope = request.form.get('scope', 'all')
+    return redirect(url_for('index', tab='dashboard', scope=scope))
+
+
+@app.route('/history/delete/<int:record_id>', methods=['POST'])
+def delete_personal_history(record_id):
+    user = session.get('user')
+    if not user:
+        return redirect(url_for('login'))
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT member_name FROM split_records WHERE id = ?", (record_id,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return "找不到該筆紀錄", 404
+
+    tokens = _user_match_tokens(user, cursor)
+    if not member_matches_user(row[0], tokens) and user.get('id') not in ADMIN_DISCORD_IDS:
+        conn.close()
+        return "權限不足：只能刪除自己的個人歷史紀錄。", 403
+
+    now_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    cursor.execute(
+        """
+        INSERT OR IGNORE INTO personal_history_hidden (discord_user_id, record_id, deleted_at)
+        VALUES (?, ?, ?)
+        """,
+        (str(user.get('id')), record_id, now_time),
+    )
+    conn.commit()
+    conn.close()
+    return redirect(url_for('index', tab='history'))
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
