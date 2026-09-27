@@ -2,7 +2,14 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from utils.database import get_db_connection
-from utils.sheets import sync_member_by_discord_id, normalize_class_name
+from utils.sheets import (
+    apply_display_name_profile,
+    discord_member_display_name,
+    load_sheet_profile,
+    normalize_class_name,
+    resolve_branch,
+    sync_member_by_discord_id,
+)
 
 ROLE_IDS = {
     "牧師": 1529725865024557196,
@@ -20,6 +27,80 @@ ROLE_IDS = {
     "3会": 1541087848298446998,
     "3會": 1541087848298446998,
 }
+
+
+def _row_value(row, index, key=None):
+    if row is None:
+        return ""
+    try:
+        if key and hasattr(row, "keys") and key in row.keys():
+            return row[key] or ""
+    except Exception:
+        pass
+    try:
+        return row[index] or ""
+    except Exception:
+        return ""
+
+
+def load_member_edit_prefill(member: discord.Member):
+    """資料庫 → 試算表 → Discord 暱稱，缺一層就往下一層補。"""
+    target_id = int(member.id)
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT discord_id, discord_name, game_name, character_name, main_class, branch
+        FROM game_characters
+        WHERE discord_id = ? OR CAST(discord_id AS TEXT) = ?
+        """,
+        (target_id, str(target_id)),
+    )
+    db_row = cursor.fetchone()
+    conn.close()
+
+    display_name = discord_member_display_name(member)
+    nick_profile = {}
+    apply_display_name_profile(nick_profile, display_name)
+
+    sheet_profile = None
+    try:
+        sheet_profile = load_sheet_profile(target_id)
+    except Exception as exc:
+        print(f"讀取試算表預填失敗：{exc}")
+        sheet_profile = None
+
+    character_name = (
+        _row_value(db_row, 3, "character_name")
+        or (sheet_profile or {}).get("character_name")
+        or nick_profile.get("character_name")
+        or ""
+    )
+    main_class = normalize_class_name(
+        _row_value(db_row, 4, "main_class")
+        or (sheet_profile or {}).get("main_class")
+        or nick_profile.get("main_class")
+        or ""
+    )
+    branch = resolve_branch(
+        _row_value(db_row, 5, "branch"),
+        (sheet_profile or {}).get("branch"),
+    )
+    discord_name = (
+        _row_value(db_row, 1, "discord_name")
+        or display_name
+        or str(member)
+    )
+    game_name = _row_value(db_row, 2, "game_name") or "靈谷"
+    return (
+        target_id,
+        discord_name,
+        game_name,
+        character_name,
+        main_class,
+        branch,
+    )
+
 
 class EditMemberByDiscordModal(discord.ui.Modal, title="🛠️ 修改成員資料"):
     def __init__(self, target_discord_id: int, db_data):
@@ -45,7 +126,7 @@ class EditMemberByDiscordModal(discord.ui.Modal, title="🛠️ 修改成員資�
             max_length=10,
             required=True
         )
-        
+
         self.add_item(self.new_char_name_input)
         self.add_item(self.class_input)
         self.add_item(self.branch_input)
@@ -66,37 +147,65 @@ class EditMemberByDiscordModal(discord.ui.Modal, title="🛠️ 修改成員資�
         old_char_name = self.db_data[3] if self.db_data else "未知"
         old_class = self.db_data[4] if self.db_data else ""
         old_branch = self.db_data[5] if self.db_data else ""
+        member = (
+            interaction.guild.get_member(self.target_discord_id)
+            if interaction.guild
+            else None
+        )
+        discord_name = (
+            discord_member_display_name(member)
+            or (self.db_data[1] if self.db_data else "")
+            or str(self.target_discord_id)
+        )
 
-        # 1. 更新本地 SQLite
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("""
-            UPDATE game_characters 
-            SET character_name = ?, main_class = ?, branch = ?
-            WHERE discord_id = ?
-        """, (new_char_name, new_class, new_branch, self.target_discord_id))
+        cursor.execute(
+            """
+            INSERT INTO game_characters (
+                discord_id, discord_name, game_name, character_name, main_class, branch
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(discord_id) DO UPDATE SET
+                discord_name = excluded.discord_name,
+                character_name = excluded.character_name,
+                main_class = excluded.main_class,
+                branch = excluded.branch
+            """,
+            (
+                self.target_discord_id,
+                discord_name,
+                "靈谷",
+                new_char_name,
+                new_class,
+                new_branch,
+            ),
+        )
         conn.commit()
         conn.close()
 
-        # 2. 同步更新 Google 試算表[cite: 1]
         sheet_updated = False
+        sheet_error = ""
         try:
-            sync_member_by_discord_id(
+            synced = sync_member_by_discord_id(
                 self.target_discord_id,
-                member=interaction.guild.get_member(self.target_discord_id) if interaction.guild else None,
+                member=member,
                 extra_profile={
+                    "discord_name": discord_name,
                     "character_name": new_char_name,
                     "main_class": new_class,
                     "branch": new_branch,
                 },
+                force=True,
             )
-            sheet_updated = True
+            sheet_updated = synced is not None
+            if not sheet_updated:
+                sheet_error = "寫入後沒有回傳列資料"
         except Exception as e:
+            sheet_error = str(e)
             print(f"❌ 同步 Google 試算表失敗：{e}")
 
-        # 3. 更新 Discord 身分組
         guild = interaction.guild
-        member = guild.get_member(self.target_discord_id)
         role_changes_msg = []
 
         if member:
@@ -122,6 +231,7 @@ class EditMemberByDiscordModal(discord.ui.Modal, title="🛠️ 修改成員資�
                         await member.add_roles(new_br)
                         role_changes_msg.append(f"分會: {new_branch}")
 
+        sheet_line = "成功" if sheet_updated else f"失敗{('：' + sheet_error) if sheet_error else ''}"
         await interaction.response.send_message(
             f"✅ **成功修改並替換成員資料！**\n"
             f"• 成員：{member.mention if member else f'<@{self.target_discord_id}>'}\n"
@@ -129,10 +239,11 @@ class EditMemberByDiscordModal(discord.ui.Modal, title="🛠️ 修改成員資�
             f"• 新遊戲角色 ID：`{new_char_name}`\n"
             f"• 新職業：`{new_class}`\n"
             f"• 新分會：`{new_branch}`\n"
-            f"• 📁 試算表同步：{'成功' if sheet_updated else '未在試算表中找到該 Discord ID'}\n"
+            f"• 📁 試算表同步：{sheet_line}\n"
             f"• 🛡️ 身分組異動：{', '.join(role_changes_msg) if role_changes_msg else '無需調整'}",
             ephemeral=True
         )
+
 
 class EditMemberCog(commands.Cog):
     def __init__(self, bot):
@@ -145,27 +256,11 @@ class EditMemberCog(commands.Cog):
     @app_commands.checks.has_permissions(manage_roles=True)
     @app_commands.default_permissions(manage_roles=True)
     async def edit_member(self, interaction: discord.Interaction, member: discord.Member):
-        target_id_int = member.id
-        target_id_str = str(target_id_int)
-
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        # 🛡️ 雙重保險查詢：支援數字與文字欄位比對
-        cursor.execute("""
-            SELECT discord_id, discord_name, game_name, character_name, main_class, branch 
-            FROM game_characters 
-            WHERE discord_id = ? OR CAST(discord_id AS TEXT) = ?
-        """, (target_id_int, target_id_str))
-        
-        row = cursor.fetchone()
-        conn.close()
-
-        if not row:
-            await interaction.response.send_message(f"❌ 找不到成員 {member.mention} 在資料庫中的記錄！", ephemeral=True)
-            return
-
-        modal = EditMemberByDiscordModal(target_discord_id=target_id_int, db_data=row)
+        prefill = load_member_edit_prefill(member)
+        modal = EditMemberByDiscordModal(
+            target_discord_id=int(member.id),
+            db_data=prefill,
+        )
         await interaction.response.send_modal(modal)
 
 async def setup(bot):
