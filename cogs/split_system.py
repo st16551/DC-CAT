@@ -491,6 +491,56 @@ class SplitSystem(commands.Cog):
         ]
         return filtered[:25]
 
+    @app_commands.command(name="查詢未領", description="查詢目前尚未領取的分錢明細")
+    @app_commands.describe(只看自己="只列出你尚未領取的單子（預設列出全部未領）")
+    async def query_unclaimed(self, interaction: discord.Interaction, 只看自己: bool = False):
+        await interaction.response.defer(ephemeral=True)
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, member_name, item_name, total_per_person, leader_name
+            FROM split_records
+            WHERE status = 0
+            ORDER BY id DESC
+            LIMIT 40
+            """
+        )
+        rows = cursor.fetchall()
+        conn.close()
+
+        display = (interaction.user.display_name or "").strip().lower()
+        username = (interaction.user.name or "").strip().lower()
+        global_name = (getattr(interaction.user, "global_name", None) or "").strip().lower()
+        tokens = [t for t in (display, username, global_name) if t]
+
+        def is_self(member_name):
+            hay = (member_name or "").strip().lower()
+            return any(t == hay or t in hay for t in tokens)
+
+        if 只看自己:
+            rows = [r for r in rows if is_self(r["member_name"])]
+
+        if not rows:
+            await interaction.followup.send("🎉 目前沒有未領取的分錢紀錄。", ephemeral=True)
+            return
+
+        lines = []
+        for row in rows:
+            amount = int(row["total_per_person"] or 0)
+            lines.append(
+                f"`#{row['id']}` **{row['member_name']}**｜{row['item_name']}｜`{amount:,}`｜負責人 {row['leader_name']}"
+            )
+        embed = discord.Embed(
+            title=f"📋 未領取分錢（{len(rows)} 筆）",
+            description="\n".join(lines[:25]),
+            color=discord.Color.orange(),
+        )
+        if len(rows) > 25:
+            embed.set_footer(text=f"僅顯示前 25 筆，共 {len(rows)} 筆")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+
 class RestoredLeader:
     def __init__(self, user_id, display_name):
         self.id = user_id or 0
