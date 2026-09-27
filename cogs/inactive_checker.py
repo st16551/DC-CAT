@@ -167,7 +167,7 @@ class InactiveCheckerCog(commands.Cog):
         try:
             synced = sync_all_members_to_sheet(guild, days=days)
             await interaction.followup.send(
-                f"📑 已同步試算表：請假／活躍／未活躍共 `{synced}` 筆（請假中不會寫入未活躍欄）。",
+                f"📑 已同步試算表：成員 `{synced}` 筆，並已連動請假／活躍／未活躍分頁（請假中不會列入未活躍）。",
                 ephemeral=True,
             )
         except Exception as e:
@@ -178,7 +178,7 @@ class InactiveCheckerCog(commands.Cog):
 
     @app_commands.command(
         name="同步試算表狀態",
-        description="【管理員】把人員完整資料、請假、活躍、未活躍寫回 Google 試算表對應欄",
+        description="【管理員】同步成員名單，並把請假／活躍／未活躍寫到對應分頁",
     )
     @app_commands.checks.has_permissions(administrator=True)
     async def sync_sheet_status(self, interaction: discord.Interaction, days: int = 14):
@@ -186,7 +186,7 @@ class InactiveCheckerCog(commands.Cog):
         try:
             count = sync_all_members_to_sheet(interaction.guild, days=days)
             await interaction.followup.send(
-                f"✅ 已把 `{count}` 位成員的人員資料、請假、活躍、未活躍寫入試算表。\n請假中的成員不會出現在未活躍欄。",
+                f"✅ 已把 `{count}` 位成員寫入「成員名單」，並連動「請假／活躍／未活躍」分頁。\n請假中的成員不會出現在未活躍分頁。",
                 ephemeral=True,
             )
         except Exception as e:

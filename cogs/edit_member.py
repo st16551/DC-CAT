@@ -4,6 +4,7 @@ from discord.ext import commands
 from utils.database import get_db_connection
 from utils.sheets import (
     apply_display_name_profile,
+    branch_from_member_roles,
     discord_member_display_name,
     load_sheet_profile,
     normalize_class_name,
@@ -83,6 +84,7 @@ def load_member_edit_prefill(member: discord.Member):
         or ""
     )
     branch = resolve_branch(
+        branch_from_member_roles(member),
         _row_value(db_row, 5, "branch"),
         (sheet_profile or {}).get("branch"),
     )
